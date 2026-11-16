@@ -6,6 +6,10 @@
 -- Good: side=true volleys while anim is punch/stand/walk, and MOTHRA hp drops in those
 -- where l-> or r-> shows mothra. heads= rarely drops below 120: a bite of Gojira only
 -- lands on a head that is down at his height (lowered for the beams).
+-- At t=40 "COUNTS side=N melee_full=M": samples (after t=8) in a side volley, and in a full
+-- volley at a Gojira closer than 10 nodes. No pass/fail: the brawl takes a different course
+-- every run (usually side 4-13 and melee_full 0; if he flies after Mothra all the time,
+-- side is 0; a volley at a Gojira who breathes fire from 8 nodes gives melee_full 2-3).
 -- After the 40 samples: "severed left head: ... 0 with a target" ("inconclusive" if no other
 -- enemy was in reach of the side heads), "regrown left head: ... aim cache cleared=true",
 -- then the aim cache equal to the override, "stuck take-off: flying=true _bulldoze_time=nil".
@@ -34,6 +38,7 @@ core.register_on_joinplayer(function(player)
 			local k = core.add_entity({x = 17, y = 8.6, z = 14}, "ghidorah:ghidorah")
 			local m = core.add_entity({x = 0, y = 30, z = 30}, "mothra:mothra")
 			L("spawned")
+			local res = {side = 0, melee_full = 0}
 			for t = 1, 40 do
 				core.after(t, function()
 					local ge, ke, me = g:get_luaentity(), k:get_luaentity(), m:get_luaentity()
@@ -41,8 +46,19 @@ core.register_on_joinplayer(function(player)
 					-- where Mothra is, seen from his chest: bearing relative to his facing, elevation
 					local bearing, elev = 0, 0
 					if me then bearing, elev = seen_from(k, m) end
-					L(("t=%d GOJIRA hp=%d | MOTHRA hp=%d bearing=%d elev=%d | GHIDORAH hp=%d target=%s anim=%s beam=%s side=%s l->%s r->%s heads=%d/%d/%d")
-						:format(t, hp(ge), hp(me), math.deg(bearing), math.deg(elev), hp(ke), tname(ke.attack), tostring(ke._current_animation),
+					-- after the opening: seconds with a side volley, and with a full volley at a
+					-- Gojira who is in melee (a gust only knocked him a few nodes away)
+					local dist = g:is_valid() and kaiju_test.flat(k:get_pos(), g:get_pos()) or -1
+					if t >= 8 and ke._beam_time then
+						if ke._beam_side then
+							res.side = res.side + 1
+						elseif tname(ke.attack) == "gojira" and dist < 10 then
+							res.melee_full = res.melee_full + 1
+						end
+					end
+					if t == 40 then L(("COUNTS side=%d melee_full=%d"):format(res.side, res.melee_full)) end
+					L(("t=%d GOJIRA hp=%d dist=%.1f | MOTHRA hp=%d bearing=%d elev=%d | GHIDORAH hp=%d target=%s anim=%s beam=%s side=%s l->%s r->%s heads=%d/%d/%d")
+						:format(t, hp(ge), dist, hp(me), math.deg(bearing), math.deg(elev), hp(ke), tname(ke.attack), tostring(ke._current_animation),
 						tostring(ke._beam_time ~= nil), tostring(ke._beam_side), tname(ke._head_target_l), tname(ke._head_target_r),
 						ke._head_hp.c, ke._head_hp.l, ke._head_hp.r))
 				end)

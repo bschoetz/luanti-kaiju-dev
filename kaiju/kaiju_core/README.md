@@ -9,18 +9,18 @@ part of Mineclonia's mob API the kaiju use (§7, `vl.lua`).
 
 | Part | Functions | Used by |
 |---|---|---|
-| Node classification | `is_immune`, `is_terrain` | `smash` |
+| Node classification | `is_immune`, `is_terrain`, `is_natural` | `smash`, `keep_clearance` |
 | Settings | `griefing_enabled` (a modpack setting on top of `mobs_griefing`) | `smash_step`, gojira, ghidorah |
 | Smashing through the world | `smash`, `smash_step` (body box, floor layer, foot-level terrain, containers, falling nodes, dust, optional tail sweep) | gojira, ghidorah, cthulhu |
 | Bulldozer and melee standoff | `update_bulldoze`, `gopath`, `end_bulldoze`, `standoff_gap` | gojira, ghidorah, cthulhu (on land; `standoff_gap` also when he swims) |
 | Water | `check_standin` (wade vs. swim by depth) | gojira, ghidorah, cthulhu (always wades; his own sea mode swims) |
 | Knockback | `no_knockback(def)` | gojira, mothra, ghidorah, cthulhu |
 | Death | `check_for_death` (plays "die", stops the mob) | gojira, ghidorah, cthulhu |
-| Flight | `ground_y`, `keep_clearance`, `fly_velocity`, `death_fall` | mothra, ghidorah; cthulhu steers with `fly_velocity` under water, staying physical |
+| Flight | `ground_y`, `ceiling_y`, `keep_clearance`, `cruise_y`, `landing_ok`, `fly_velocity`, `death_fall` | mothra, ghidorah; cthulhu steers with `fly_velocity` under water, staying physical |
 | Hit boxes | `ensure_hitboxes` (entity `kaiju_core:hitbox`) | gojira, ghidorah, cthulhu |
 | Truce after a Ghidorah's death | `start_truce`, `retreat_goal`, `get_active_target`, table `truce` | ghidorah (start), gojira, mothra |
 | Game support (§7) | `mcl_mobs` (the mob API to use), `voxelibre`, `mob_griefing`, `tile_drops` | all |
-| Small shared helpers (§3.12) | `model_point`, `flat_dist`, `is_kaiju`, `cthulhu_rule`, `lock_animations`, `play`, `is_water`, `is_solid`, `water_column` | all |
+| Small shared helpers (§3.12) | `model_point`, `flat_dist`, `axis_dist`, `bite_dist`, `is_kaiju`, `cthulhu_rule`, `lock_animations`, `play`, `is_water`, `is_solid`, `water_column` | all |
 
 Ghidorah walks **and** flies and uses both halves (§5.3). Cthulhu
 ([`../cthulhu/README.md`](../cthulhu/README.md)) uses the ground half on land and
@@ -71,7 +71,7 @@ installing and upgrading. `tests/run.sh` links the whole modpack into every test
 
 ## 2. Conventions
 
-- Every function except `is_immune`, `is_terrain`, `griefing_enabled`, `ground_y`,
+- Every function except `is_immune`, `is_terrain`, `is_natural`, `griefing_enabled`, `ground_y`,
   `no_knockback` and `start_truce` takes the
   mob's luaentity as `self` (an `mcl_mobs` mob). Call them as `kaiju_core.f(self, ...)`, not
   with `:`.
@@ -108,6 +108,20 @@ instead of tunnelling through them.
 
 `is_terrain` returns false for unknown node names.
 
+#### `kaiju_core.is_natural(name) -> bool`
+
+True for `is_terrain` nodes (evaluated at call time: `vl.lua` wraps it) and for the nodes
+the world is built from, collected once all mods are loaded: every registered biome's
+`node_top`, `node_filler`, `node_stone`, `node_riverbed`, `node_dust` and `node_water_top`
+(ice), every registered ore, and a list of names (sandstone, red sandstone, snow block,
+ice, packed ice, clay, calcite, dripstone block, netherrack, soul sand, soul soil, magma,
+glowstone, basalt, blackstone, the nyliums, end stone). VoxeLibre registers its biomes
+and ores with the engine; Mineclonia's own level generator does not, so there the groups
+and the name list decide. A smash pass in the air (`keep = "natural"`) leaves these nodes
+standing at any height, and `keep_clearance(..., smashes)` counts them as ground. Trees
+and buildings are not natural. A block a player placed is not told apart from the same
+block in the terrain: a hut of dirt, stone or plain sandstone survives.
+
 ### 3.2 Smashing
 
 #### Config: `self._smash`
@@ -122,6 +136,7 @@ mob._smash = {
 		unit = SCALE / 10,  -- nodes per model unit
 		first = 3,          -- first segment to sweep (default 1)
 	},
+	keep = "natural",       -- optional, for a pass in the air: see smash
 }
 ```
 
@@ -131,16 +146,19 @@ to nodes. With the optional fifth value the segment is swept **twice**, that far
 left and to the right of the centre line: two splayed tails. Gojira's segments have four
 values, Ghidorah's five.
 
-#### `kaiju_core.smash_step(self, dtime, mob_name)`
+#### `kaiju_core.smash_step(self, dtime, mob_name, cfg)`
 
-Call it every step from `ai_step`, after `mob_class.ai_step`.
+Call it every step from `ai_step`, after `mob_class.ai_step`. `cfg` is the config for
+this call; without it `self._smash` is used. Pass a different one as an argument (Ghidorah
+in flight) instead of assigning `self._smash`: an entity field would be saved with the mob
+and shadow the definition's.
 
 - Returns at once if `self.dead` or
   `kaiju_core.griefing_enabled(mob_name, "kaiju_smash_blocks")` is false (§3.7): the
   setting `kaiju_smash_blocks` is off, or Mineclonia forbids griefing for this mob
   (gamerule `mobs_griefing`, or the per-mob list `mcl_mobs_griefing_disable_individual`).
   `mob_name` is the entity name, e.g. `"gojira:gojira"`.
-- Runs `smash(self, self._smash or {})` every `SMASH_INTERVAL` (0.25 s), throttled while
+- Runs `smash(self, cfg or self._smash or {})` every `SMASH_INTERVAL` (0.25 s), throttled while
   idle:
   - **Idle** means no `self.attack`, horizontal speed² < 0.01, and yaw unchanged
     (< 0.01 rad) since the last interval.
@@ -170,6 +188,11 @@ One smash pass, without timer or griefing check (`smash_step` does those; a call
      `keep_terrain_to = p1.y + 1`, the foot layer.
    - Swimming (`self.floats == 1`): `floor_y = nil` and `keep_terrain_to = p1.y`. A
      swimmer can't step up a steep shore, so it cuts through its foot layer instead.
+   - In the air (`cfg.keep == "natural"`): `floor_y = nil` and `keep_terrain_to = nil`.
+     There is no floor layer, and every natural node (`is_natural`) stays whatever its
+     height: the flyer tears down trees and buildings but digs no hole into a hillside.
+     The box is larger than on foot (Ghidorah, lookahead 12: 1800-3200 nodes against about
+     700); `ghidorah_airsmash` logs the time per pass.
 3. Every node in the box goes through `smash_node` (below), then the tail sweep runs if
    `cfg.tail` is set.
 4. **Falling nodes.** For each (x, z) column, `core.check_for_falling` runs on the highest
@@ -185,7 +208,7 @@ node is **skipped** if any rule matches, in this order:
 | Rule | Skip if |
 |---|---|
 | Immune | `is_immune(name)` |
-| Terrain at foot level | `p.y <= keep_terrain_to` and `is_terrain(name)` |
+| Terrain at foot level | `p.y <= keep_terrain_to` and `is_terrain(name)`; with `keep_terrain_to == nil` (a pass in the air): `is_natural(name)` |
 | Protection | `core.is_protected(p, "")` (empty player name: protected areas are never touched) |
 | Floor layer | `p.y == floor_y` and the node needs no real dig |
 
@@ -298,7 +321,10 @@ Mothra or a player on a tower the mob walks on as before. While it is true,
 bites from where it is. The `min` with the reach keeps the target biteable.
 
 The gap is horizontal, but mcl_mobs measures the bite in 3D (feet to feet). So the
-standoff also needs `vector.distance(own pos, target pos) <= self.reach`. A target inside
+standoff also needs `kaiju_core.bite_dist(self, own pos, target pos) <= self.reach`: the
+3D distance from the mob's feet, or, for a mob with `_bite_height` (Gojira: 14.5), from
+the nearest point of its body's axis up to that height, which is also the distance that
+mob passes to the bite check (`pre_melee_attack`). A target inside
 the gap but above the ground (a swimmer over deep water, a player on a roof at chest
 height) would otherwise be out of reach for good, and for Gojira too close for his fire
 breath: he stood still, and the stuck detection never fired, because he was "close". In
@@ -306,8 +332,9 @@ that case `at_standoff` returns `false, true`, and `gopath` walks straight on to
 target (`go_to_stupidly`: the pathfinder has no node to go to in mid-air) until the bite
 reaches. `gojira_overhead` has a player hovering 5.8 nodes above his feet: he used to stop
 at 4.4 nodes (7.3 in 3D, reach 7) and never bit; now he bites from the second he arrives.
-A target 7 to 9 nodes straight above his feet is still out of both reach and breath range;
-that was so before the standoff existed.
+Since Gojira bites along his whole axis he stops at the standoff gap below such a target
+and bites from there (`gojira_reach`, phase "chest": 8 nodes above the ground); the walk
+below the target remains for kaiju that bite from their feet (Ghidorah, Cthulhu on land).
 
 - Gojira (half-width 2.4, reach 7) and Ghidorah (2.6, reach 8) stop at 6.5 and 7 nodes and
   need about a node to come to rest: `kaiju_clinch` shows 5.5-6.4 between their centres;
@@ -373,20 +400,101 @@ Water counts as ground, and so does anything pointable (leaves, plants). Start t
 above the highest terrain you care about: callers pass a point 30 nodes above the
 relevant height.
 
-#### `kaiju_core.keep_clearance(self, self_pos, dtime, min_clearance)`
+#### `kaiju_core.ceiling_y(pos, up) -> number or nil`
+
+A raycast from `pos` up to `pos + up` (`liquids = false`). Returns the underside of the
+first **roof** node (`pointed.under.y − 0.5`), or `nil` under the open sky. A roof is a
+walkable node (or an unknown one) that is not foliage: the `leaves` group, and by name the
+caps of the Nether's huge fungi (`mcl_nether:nether_wart_block`,
+`mcl_crimson:warped_wart_block`, `mcl_crimson:shroomlight`, which are in no group of their
+own; in the real Nether Ghidorah took a fungus cap for a roof and landed again). A flyer
+passes through foliage, and a tree is no reason not to take off. Plants and other
+non-walkable nodes are skipped. A ray that starts on a node's face may return that node, so don't
+start it at the feet of a mob standing on the ground: start a node higher.
+
+#### `kaiju_core.keep_clearance(self, self_pos, dtime, min_clearance, smashes)`
 
 Call every AI step after the goal is set. Does nothing without `self._goal`.
 
-- Every 0.25 s (`_floor_timer`), or when `_floor` is unset, it samples `ground_y` along
-  the straight line from the mob to the goal: both ends plus a point every
-  `CLEARANCE_STEP` (4) nodes, at most `CLEARANCE_SAMPLES` (12) steps, i.e. up to 13 rays.
-  Longer paths get wider spacing. All rays start at `max(self_pos.y, goal.y) + 30`.
-- `self._floor = highest ground + min_clearance`.
-- Every call it clamps `self._goal.y = max(goal.y, _floor)` **in place**.
+`smashes` (optional): the mob breaks what is in its way with `smash` and
+`keep = "natural"`. Under the open sky only ground that such a pass leaves standing then
+counts (`lasting_ground_y`: the first node from above that is immune, natural or
+protected), so the mob flies through towers and tree tops at `min_clearance` above the
+real ground instead of over them. Pass the result of `griefing_enabled(...)`: with
+smashing off it must fly over everything, as without the argument. Under a roof nothing
+changes, and neither do `ground_y`, `cruise_y` or `landing_ok`.
+
+Every 0.25 s (`_floor_timer`), or when `_floor` is unset, it checks the straight line from
+the mob to the goal: both ends plus a point every `CLEARANCE_STEP` (4) nodes, at most
+`CLEARANCE_SAMPLES` (12) steps; longer paths get wider spacing. First one ray up from the
+mob (from a node above its feet, as far up as the ground rays below would start) decides
+the mode. Only the mob's own position does: a canopy or an overhang ahead of a mob under
+the open sky is flown over, as before.
+
+**Under the open sky** (as before the ceilings were handled):
+
+- `ground_y` (with `smashes`: `lasting_ground_y`) at every sample, all rays starting at `max(self_pos.y, goal.y) + 30`: up to
+  13 rays.
+- `self._floor = highest ground + min_clearance`; `_cap`, `_blocked` and `_cramped` are
+  cleared.
+
+**Under a roof** (`cave_clearance`): every sample is a column between a floor and a roof.
+
+- The column is probed at the height the previous sample had air at, starting a node
+  above the mob's feet (the cave the mob is in, not another one behind the rock); if that
+  point is solid, at the path's own height there. From the probe point: `ceiling_y` up,
+  `ground_y` down, and a ray from the previous probe point (a wall between two samples).
+  One more ray reaches `WALL_MARGIN` (4) nodes beyond the goal: the mob overshoots a
+  goal a little, and without it a goal right in front of a wall took it into the wall.
+  At most 3 × 12 + 3 rays, with the mode ray 40.
+- Floor = the highest floor, roof = the lowest roof of the samples. `self._cap = roof −
+  body height − CEIL_MARGIN` (2). `self._floor = floor + min_clearance` if that fits under
+  the cap; otherwise the mob flies in the middle of what there is:
+  `_floor = _cap = max(floor + 1, (floor + cap) / 2)`.
+- The path is **blocked** at the first sample that is inside rock, behind a wall, or where
+  the gap (highest floor so far to lowest roof so far) is lower than body height +
+  `MIN_ROOM` (2). Then `self._blocked = true` and `self._stop_x`, `_stop_z` are the last
+  sample before it: floor and roof are those of the samples up to there.
+- The mob's **own spot never blocks it**. If its gap is too low (`self._cramped`), the
+  sample is left out, and the mob moves on towards the samples that have room, without
+  the climb on the spot (its own roof is not part of `_cap` then). If there is no room
+  ahead either, it holds in the middle of its own gap. It never climbs through rock.
+
+Every call it then clamps the goal **in place**: `goal.y = max(goal.y, _floor)`, `goal.y =
+min(goal.y, _cap)` under a roof, and if `_blocked`, `goal.x, goal.z = _stop_x, _stop_z`:
+the mob flies as far as there is room and holds there. What to do about a blocked path
+is the mob's business: Mothra's wander picks another direction, Ghidorah lands.
+
+Conservative on purpose: the highest floor and the lowest roof may come from different
+columns, so a cave that slopes steeply along a path can count as blocked although a flyer
+could follow it.
+
+`kaiju_core._flight_stats` counts the checks, their rays and time (`refreshes`, `rays`,
+`max_rays`, `total_us`, `max_us`), for tests. `mothra_ceiling`: 17-20 rays per check on
+average; a check takes about 0.13 ms (0.7 ms at most) with one client running, 0.2-0.5 ms
+with five in parallel.
 
 | Reads | Writes |
 |---|---|
-| `_goal` | `_goal.y`, `_floor`, `_floor_timer` |
+| `_goal`, `collisionbox[5]` | `_goal.y` (blocked: `_goal.x`, `_goal.z`), `_floor`, `_floor_timer`, `_cap`, `_blocked`, `_stop_x`, `_stop_z`, `_cramped` |
+
+#### `kaiju_core.cruise_y(p, self_y, altitude, height) -> number`
+
+The height to fly to at `p` for a flyer now at height `self_y`: `altitude` above the
+ground there. If there is a roof above `p` at the flyer's height (within 32 nodes), the
+ground is the floor below that point, and the result is capped at `roof − height −
+CEIL_MARGIN`. Without a roof (or if that point is inside rock) it is
+`ground_y(p at self_y + 30) + altitude`, as the wander code had it. Used for wander goals
+and retreat legs.
+
+#### `kaiju_core.landing_ok(pos, cb) -> number or nil`
+
+Can a flyer with collision box `cb` land in the column below `pos`? Five rays down, up to
+64 nodes (the centre and the four corners of the box, `liquids = true`). Each must reach a
+walkable node at least a node below `pos`, without meeting foliage (as for `ceiling_y`) or
+a liquid first (plants are skipped), and the five heights must lie within 1.5 nodes. Returns the ground's
+height, else `nil`. It does not ask for natural terrain: netherrack, snow, sandstone or a
+village path are ground. A thin trunk between the five rays is not seen.
 
 #### `kaiju_core.fly_velocity(self, dtime, self_pos, default_speed) -> vector`
 
@@ -396,15 +504,19 @@ Call from `motion_step`. Sets the object's velocity and returns the wanted veloc
 - `speed = self._goal_speed or default_speed`.
 - **Climb first:** while `self_pos.y < _floor − 2`, `want = (0, min(speed, 2·(_floor − y)), 0)`.
   It rises on the spot and only then crosses higher terrain. The same rule lifts a flyer
-  spawned on the ground.
+  spawned on the ground. Under a roof `_floor` is at most `_cap`, so the climb ends below
+  it; a `_cramped` mob does not climb on the spot.
 - Otherwise `want = (goal − pos) · min(speed, 2·dist) / dist`: full speed, slowing down
   linearly within `speed/2` nodes; `want = 0` within 0.5 nodes or without a goal.
 - The velocity is blended towards `want` with `k = min(1, 1.5·dtime)`, a first-order lag
   with a time constant of about 0.67 s.
+- Under a roof the climb ends at `_cap`: above it an upward velocity is set to 0, or the
+  lag carried a fast climb past the cap (a Mothra chasing a flying Ghidorah in the Nether
+  touched the roof once).
 
 | Reads | Writes |
 |---|---|
-| `_goal`, `_goal_speed`, `_floor`, object velocity | object velocity |
+| `_goal`, `_goal_speed`, `_floor`, `_cap`, `_cramped`, object velocity | object velocity |
 
 #### `kaiju_core.death_fall(self, self_pos, fall_time)`
 
@@ -586,6 +698,8 @@ turned by the yaw.
 | Function | What it does | Used by |
 |---|---|---|
 | `kaiju_core.flat_dist(a, b) -> number` | Horizontal distance between two positions (only `x` and `z` are read). | `at_standoff`, `update_bulldoze`, `retreat_goal`, cthulhu |
+| `kaiju_core.axis_dist(p, t, h) -> number` | Distance from `t` to the vertical line from `p` up to `p + h`: to a body's axis instead of its feet. | `bite_dist`, cthulhu (sea mode: his feet are 9 nodes under the surface) |
+| `kaiju_core.bite_dist(self, p, t) -> number` | The distance a mob at `p` bites over, to compare with its `reach`: `axis_dist(p, t, self._bite_height or 0)`. Without `_bite_height` that is the feet-to-feet distance of mcl_mobs. A mob that sets `_bite_height` overrides `pre_melee_attack` to pass this distance on. | `at_standoff`, gojira (`_bite_height` 14.5: bite check and the lower limit of his breath) |
 | `kaiju_core.is_kaiju(ent) -> bool` | Is this luaentity (or nil) a Gojira, Mothra, Ghidorah or Cthulhu? | ghidorah (whom the side heads beam on their own; other Ghidorahs are excluded before), cthulhu (never grabbed) |
 | `kaiju_core.cthulhu_rule() -> rule` | A new targeting rule: `build_nearest_target_rule("mob", {"cthulhu:cthulhu"}, nil, function() return 32 end, nil)`. The nearest Cthulhu in sight within 32 nodes, let go beyond 32 or after 3 s out of sight; never while he is under water without a target (his `valid_enemy`). The range must be a function: `build_nearest_target_rule` silently ignores a number. | gojira, ghidorah |
 | `kaiju_core.lock_animations(def)` | Call on the mob definition before `register_mob`. Installs a `set_animation` that ignores every request except `"die"` while `self._anim_lock` is above 0. mcl_mobs sets walk, stand and punch on its own every step on the ground; this keeps a one-shot clip running. The mob counts `_anim_lock` down in its own step (`if self._anim_lock then self._anim_lock = self._anim_lock - dtime end`). | ghidorah, cthulhu |
@@ -627,7 +741,10 @@ All are `local` in `init.lua`; change them there (they affect every kaiju).
 | `STANDOFF` | 2.0 | n | gap kept between the bodies in melee (about one of it is used up stopping) |
 | progress margin | 1 | n | gain needed to reset the stuck timer (hard-coded) |
 | `CLEARANCE_STEP` | 4 | n | ground sample spacing along the path |
-| `CLEARANCE_SAMPLES` | 12 | steps | cap on samples (13 rays per check) |
+| `CLEARANCE_SAMPLES` | 12 | steps | cap on samples (open sky: 14 rays per check; under a roof up to 40) |
+| `CEIL_MARGIN` | 2 | n | kept between a flyer's head and a roof (`_cap`) |
+| `MIN_ROOM` | 2 | n | a gap must be this much higher than the body, or the path is blocked |
+| `WALL_MARGIN` | 4 | n | free space required beyond a goal under a roof |
 | clearance re-check | 0.25 | s | `_floor_timer` (hard-coded) |
 | climb-first margin | 2 | n | below `_floor − 2` it only climbs (hard-coded) |
 | steering lag | 1.5 | 1/s | `k = min(1, 1.5·dtime)` (hard-coded) |
@@ -736,7 +853,7 @@ end
 
 function ghidorah:ai_step(dtime)
 	mob_class.ai_step(self, dtime)
-	if not self._flying then kaiju_core.smash_step(self, dtime, "ghidorah:ghidorah") end
+	kaiju_core.smash_step(self, dtime, "ghidorah:ghidorah", self._flying and FLY_SMASH or nil)
 end
 
 function ghidorah:check_standin(dtime, attach_pos)
@@ -749,13 +866,15 @@ kaiju_core.no_knockback(ghidorah)
 
 Points to decide (what Ghidorah does is in his README):
 
-- **Smash only on foot.** `smash` treats any `floats ~= 1` mob as standing, so a flyer
-  would keep the layer at its feet (and natural terrain up to one above) and dig
-  everything else its box touches, such as tree tops it flies through. It would also pay
-  for a full box of `get_node` calls per pass in open air, and the idle throttle only
-  looks at horizontal speed, so a hovering flyer counts as idle. Skipping `smash_step` while airborne
-  avoids all of that. `_tail_yaw` then goes stale, so the first pass after landing may
-  sweep a large turn (capped at `TAIL_MAX_STEPS` samples).
+- **Smashing in the air.** On foot `smash` keeps the layer at the feet and terrain one
+  above it. In the air Ghidorah passes `FLY_SMASH = {lookahead = 12, keep = "natural"}` to
+  `smash_step` (his head is 11 nodes ahead of his feet in the fly pose): no floor layer, no
+  tail, natural nodes stay. His `keep_clearance` calls pass
+  `griefing_enabled("ghidorah:ghidorah", "kaiju_smash_blocks")` as `smashes`, so he flies
+  through what he may break and over what he may not (natural terrain, protected areas,
+  everything with griefing off). The idle throttle looks at horizontal speed, so a flyer
+  hovering without a target smashes every 2 s only. `_tail_yaw` goes stale in the air, so
+  the first pass after landing may sweep a large turn (capped at `TAIL_MAX_STEPS`).
 - **Bulldozer on foot.** On take-off call `end_bulldoze(self)` so a running bulldoze and
   its straight-line target don't come back on landing.
 - **Death.** `death_fall` is for flyers. On foot let the stock `motion_step` handle the
@@ -811,17 +930,26 @@ Points to decide (what Ghidorah does is in his README):
    `no_knockback(def)`. `gojira_punch` shows the speed unchanged after punches, and 0.00
    with the stock path. All three kaiju call `no_knockback`.
 9. **Path clearance samples a line** [code + test]. `keep_clearance` samples only the line
-   under the mob's centre, every 4 nodes (wider on paths over 48 nodes). A spike 1-2 nodes
-   wide between samples, or a tower beside the path under a wide wingspan, can be missed.
-   Before path sampling, Mothra flew through a 36-high wall (`mothra_terrain`).
-10. **Ceilings** [code, unverified in game]. `ground_y` is cast from 30 nodes above the
-    path. Under a roof within that distance (caves, the Nether) it hits the roof, the
-    floor jumps to roof + clearance, and climb-first drives the flyer up into the roof.
+   under the mob's centre, every 4 nodes (wider on paths over 48 nodes). Under the open
+   sky a spike 1-2 nodes wide between samples can be missed; under a roof a ray between
+   the samples finds walls. A tower or a wall beside the path under a wide wingspan is
+   missed in both modes (the wings are not sampled). Before path sampling, Mothra flew
+   through a 36-high wall (`mothra_terrain`).
+10. **Ceilings** [code + test]. Fixed: the ground rays used to start 30 nodes above the
+    path, inside the rock under a roof closer than that, so the "ground" was the roof's
+    top and climb-first drove the flyer up into the roof. Now a roof above the flyer
+    switches `keep_clearance` to columns between floor and roof (§3.6). `mothra_ceiling`
+    (three closed rooms) and `ghidorah_ceiling`; one run in a real Nether (`tests/README.md`).
+    What remains: the mode depends on the flyer's own position only, the check is
+    conservative (floor and roof from different columns), and a flyer whose path is
+    blocked holds or lands: it looks for no way around.
 11. **Ground includes water and anything pointable** [code]. `liquids = true`, so lakes
-    are ground (a flyer hovers above them). Leaves and plants are pointable, so trees raise
-    the clearance floor.
-12. **`keep_clearance` edits the goal in place** [code]. `_goal.y` is raised; if the AI
-    keeps a reference to the same vector for something else, it sees the raised value.
+    (and lava) are ground (a flyer hovers above them). Leaves and plants are pointable, so
+    trees raise the clearance floor. A roof (`ceiling_y`) is narrower: walkable and not
+    leaves.
+12. **`keep_clearance` edits the goal in place** [code]. `_goal.y` is raised (under a roof
+    also lowered, and a blocked goal's x and z move); if the AI keeps a reference to the
+    same vector for something else, it sees the changed value.
 13. **The death fall depends on the die clip** [code + test]. `DEATH_FALL_TIME` (2.5 s)
     assumes the body is removed 3.5 s after death (Mothra: 30 frames at 10 fps + 0.5 s).
     A kaiju with a shorter die clip, or a drop above 105 nodes at the 30 n/s cap, still
@@ -868,15 +996,16 @@ falls back to VoxeLibre's `mcl_mobs` and replaces:
 
 | Name | What it does on VoxeLibre |
 |---|---|
-| `mob_class` | A class on top of VoxeLibre's: `on_step` runs `check_standin`, `navigation_step`, `motion_step`, `ai_step`, burning, `rotate_step`, `run_targeting_rules`, `run_ai` (Mineclonia's order), and none of VoxeLibre's state machine. It implements the methods listed in [`../README.md`](../README.md#api-comparison). |
+| `mob_class` | A class on top of VoxeLibre's: `on_step` runs `check_standin` (with Mineclonia's environment damage, below), `navigation_step`, `motion_step`, `ai_step`, burning, `rotate_step`, `run_targeting_rules`, `run_ai` (Mineclonia's order), and none of VoxeLibre's state machine. It implements the methods listed in [`../README.md`](../README.md#api-comparison). |
 | `register_mob` | Registers with VoxeLibre (`spawn_class`, `can_despawn = false`, `initial_properties` with boxes, size and HP), then copies the definition's other fields (methods, `_fields`) onto the entity (with `rawget`: VoxeLibre's class has methods of the same names) and sets the class as its metatable. A kaiju saved while dead is removed on activation (VoxeLibre removes the body with `core.after`, which a restart loses). `on_activate` runs VoxeLibre's, then sets `self.collisionbox` and calls `post_load_staticdata`. |
 | `register_arrow` | `_lifetime` × 0.05 (steps → seconds); a raycast along the path, then the stock 1.5-node radius (the raycast skips players without `enable_pvp`); a hit on a `kaiju_core:hitbox` goes to its owner via `hit_mob`; the shooter and its hit boxes are never hit (`allow_punching`). |
 | `get_arrow_damage_func` | Passes the shooter as the source, so the victim retaliates. |
-| `build_*_target_rule` | Own implementations with Mineclonia's semantics (seek every 0.5 s, sight persistence 3 s, retaliation 15 s). `build_alert_receiver_rule` returns a rule that never fires. |
+| `build_*_target_rule` | Own implementations with Mineclonia's semantics (seek every 0.5 s, sight persistence 3 s, retaliation 15 s). There is no `build_alert_receiver_rule`: no kaiju uses one (Gojira's never fired on either game: Mineclonia's mobs alert only their own kind). |
 
 Constants in `vl.lua`: `SPEED` 0.8 nodes/s per `movement_speed` (Gojira's 7.5 gives the
-6 n/s measured on Mineclonia), `SWIM_SPEED` 5/3 per `water_velocity`, `GRAVITY` 14.7,
-`JUMP` 7 (against a wall), `RISE` 4 (vertical speed in water), `TURN_RATE` 5 rad/s,
+6 n/s measured on Mineclonia), `SWIM_SPEED` 5/3 per `water_velocity`, `GRAVITY` 32 (Mineclonia's; VoxeLibre's own 14.7 kept a kaiju hit by Mothra's gust in the
+air for 0.8 s and 9 nodes instead of 0.3 s and 6: `kaiju_physics`),
+`JUMP` 10.1 (against a wall, 1.6 nodes high), `RISE` 4 (vertical speed in water), `TURN_RATE` 5 rad/s,
 `PUSH` 3 n/s (out of an overlapping kaiju; other mobs don't push), `PACE_TIMEOUT` 15 s,
 `ARRIVE` 0.6 nodes (a waypoint counts as reached).
 
@@ -887,6 +1016,38 @@ mangrove roots), by name, because VoxeLibre has no such group (its `stone` group
 stone bricks, so it is not used); `check_standin` records the kaiju's swim depth in
 `self._swim_depth` for the pathfinder; and `tile_drops` returns the `mcl_doTileDrops`
 setting as read at load.
+
+**Environment damage.** `K:check_standin` runs `env_damage` every 0.5 s: a copy of
+Mineclonia's `check_standin` / `apply_environment_damage` over the nodes the collision box
+touches, with the same bounds (0.01 inside the box, so a body standing against a wall is
+not in it: bulldozing and tunnelling cause no suffocation). Lava 4 and 15 s on fire, soul
+fire 2 or fire 1 and 5 s on fire, a magma block under the feet 1 (none of these with
+`_fire_resistant`: Gojira, Ghidorah), an opaque solid node in the row at `head_eye_height`
+1 (Ghidorah's eyes, 16, are above his 15-node box: he never suffocates), and half a
+node's `damage_per_second`. The strongest of the first four is dealt, fractions kept.
+Burning itself and its end in water are VoxeLibre's `mcl_burning.tick`. Not ported: rain
+(a kaiju in the rain still catches fire), powder snow, cramming. Falls and drowning hurt
+no kaiju on either game. `kaiju_env`: the same numbers on both games.
+
+**Knockback on players.** Mineclonia throws a punched player itself
+(`mcl_player.player_knockback`: factor 1 + the hitter's `_attack_knockback`, through
+`mcl_util.calculate_knockback`) and switches the engine's knockback off. VoxeLibre leaves
+players to the engine's (about 6.9 n/s for every hitter, horizontal only, so friction eats
+it: a Gojira bite moved a player 1.0 node, against 6.2 in 1.5 s on Mineclonia). So `vl.lua`
+registers an `on_punchplayer` callback that, for a kaiju hitter, adds
+`knockback_vel(v, (1 + _attack_knockback) * 0.5, standing, dx, dz) - v`, a copy of
+Mineclonia's formula, with Mineclonia's gates: the player is alive, the punch's raw damage
+is above 0 (the value the engine computes from the armor groups, before armour, effects,
+creative mode or `enable_damage = false` take it away: a bite throws the player in a world
+without damage as well), and no shield blocks it (VoxeLibre's own rule: raised, and the
+hitter in front). There are no invulnerability frames in this path on Mineclonia, so none
+here. `core.calculate_knockback` is wrapped to return 0 when the hitter is
+a kaiju, so the engine's is not added on top. Gojira (`_attack_knockback` 3) throws a
+standing player at about 21.8 n/s and 8 up, Ghidorah and Cthulhu at 5.5 and 5
+(`kaiju_knockback`: the same displacement on both games, with and without `enable_damage`). Mobs bitten by a kaiju keep
+VoxeLibre's `on_punch` knockback, which is about as strong as Mineclonia's (a cow bitten
+by Gojira: 7.4 nodes on both). Flames, beams and gusts go through `deal_damage` and are
+not affected.
 
 ### Pathfinding on VoxeLibre (`vl_path.lua`)
 

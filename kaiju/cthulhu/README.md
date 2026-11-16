@@ -30,7 +30,7 @@ Mineclonia framework references below are to `vendor/mineclonia/mods/ENTITIES/mc
 |---|---|---|
 | HP | 550 | Between Gojira (500) and Ghidorah (600). |
 | Armor | `armor = 45` | He takes 45 % of punch damage. 550 HP are worth 1222 in water (Gojira 500 / 0.40 = 1250, Ghidorah 600 / 0.50 = 1200) and 815 on dry land, where every hit counts 1.5×. |
-| Damage | 16 per claw swipe, every 1.5 s | Between Ghidorah's bite (13) and Gojira's (18). He has no ranged weapon; the grab only works on players and small mobs. |
+| Damage | 16 per claw swipe, every 1.5 s | Between Ghidorah's bite (10) and Gojira's (18). He has no ranged weapon; the grab only works on players and small mobs. |
 | Reach | 8 | Measured from his centre; long arms (Gojira 7, Ghidorah 8). In sea mode from the nearest point of his body's axis (§3.5). |
 | Size | `collisionbox = {-2.8, 0, -2.8, 2.8, 13, 2.8}`, `visual_size` 6 | 13 nodes, so he submerges fully in the 15-32 nodes of a v7 ocean. |
 | Speed | `movement_speed = 7.0` on land, 8 nodes/s swimming at a target, 5 on the way home | Gojira: 7.5. |

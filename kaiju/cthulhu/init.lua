@@ -257,7 +257,7 @@ local cthulhu = {
 	stepheight = 1.1,
 	movement_speed = 7.0,      -- a little slower than Gojira (7.5): he lumbers on land
 	floats = 0,                -- never bobs on the surface: sea mode holds his depth
-	damage = 16,               -- claw swipe, between Ghidorah's bite (13) and Gojira's (18): no ranged weapon
+	damage = 16,               -- claw swipe, between Ghidorah's bite (10) and Gojira's (18): no ranged weapon
 	reach = 8,                 -- long arms; measured from the centre (Gojira 7, Ghidorah 8)
 	melee_interval = 1.5,
 	attack_type = "null",
@@ -562,9 +562,7 @@ end
 -- In sea mode his feet are 9 nodes below the surface: reach counts from the nearest point
 -- of his body's axis instead (on land from his feet, as kaiju_core's standoff expects).
 local function attack_dist(self, p, t)
-	local dy = t.y - p.y
-	if self._at_sea then dy = dy - math.max(0, math.min(H, dy)) end
-	return math.sqrt((t.x - p.x) ^ 2 + (t.z - p.z) ^ 2 + dy * dy)
+	return kc.axis_dist(p, t, self._at_sea and H or 0)
 end
 
 function cthulhu:pre_melee_attack(distance, delay, line_of_sight)

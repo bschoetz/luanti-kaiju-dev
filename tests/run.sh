@@ -38,6 +38,7 @@ printf 'gameid = %s\nbackend = sqlite3\nplayer_backend = sqlite3\nauth_backend =
 	printf 'enable_sound = false\nmute_sound = true\nscreen_w = 960\nscreen_h = 600\n'
 	printf 'name = tester\nenable_damage = true\nmg_name = flat\nfixed_map_seed = 1\n'
 	cat "$SRC/test.conf"
+	printf '%s\n' "${KAIJU_TEST_CONF:-}" # extra settings for one run (e.g. kaiju_duel_gap = 30)
 } > "$OUT/test.conf"
 
 # Isolated home/config so the user's own Luanti settings and worlds are untouched.

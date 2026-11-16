@@ -4,7 +4,7 @@
 -- runs the hooks in Mineclonia's order (check_standin, navigation, motion_step, ai_step,
 -- targeting rules, run_ai), melee, the target rule builders, damage and death. It is an
 -- own, much smaller implementation (README.md §VoxeLibre): a pathfinder of its own
--- (vl_path.lua), no environment damage except burning, no fall damage.
+-- (vl_path.lua), Mineclonia's environment damage (env_damage), no fall damage.
 
 local VL = mcl_mobs.mob_class
 local K = setmetatable({}, {__index = VL})
@@ -35,14 +35,21 @@ core.register_on_mods_loaded(function()
 		self._swim_depth = swim_depth < math.huge and swim_depth or nil
 		return check_standin(self, dtime, attach_pos, swim_depth)
 	end
+	-- A kaiju's bite throws a player with Mineclonia's formula (K:custom_attack), not with
+	-- the engine's knockback (wrapped by VoxeLibre's mcl_enchanting).
+	local calculate_knockback = core.calculate_knockback
+	function core.calculate_knockback(player, hitter, ...)
+		if hitter and kaiju_core.is_kaiju(hitter:get_luaentity()) then return 0 end
+		return calculate_knockback(player, hitter, ...)
+	end
 end)
 
 dofile(core.get_modpath("kaiju_core") .. "/vl_path.lua")
 
 local SPEED = 0.8          -- nodes/s per movement_speed unit (Gojira 7.5: ~6 n/s, as on Mineclonia)
 local SWIM_SPEED = 5 / 3   -- nodes/s per water_velocity unit (Gojira 3.0: ~5 n/s)
-local GRAVITY = 14.7       -- VoxeLibre's mob fall acceleration
-local JUMP = 7             -- jump velocity against a wall it can't step onto (~1.6 nodes)
+local GRAVITY = 32         -- Mineclonia's mob fall acceleration (VoxeLibre's own is 14.7: a gust threw a kaiju twice as long)
+local JUMP = 10.1          -- jump velocity against a wall it can't step onto (~1.6 nodes)
 local RISE = 4             -- vertical speed in water (floats == 1 rises, else sinks)
 local TURN_RATE = 5        -- rad/s
 local SEEK_INTERVAL = 0.5  -- nearest-target rules look for a new target this often
@@ -250,8 +257,65 @@ function K:halt_in_tracks(immediate, keep_animation)
 	if immediate then self.object:set_velocity(vector.zero()) end
 end
 
+-- What a node does to a mob inside it (memoised per node name), by Mineclonia's rules.
+local env_class = setmetatable({}, {__index = function(t, name)
+	local def = core.registered_nodes[name]
+	local g = def and def.groups or {}
+	local c
+	if name == "mcl_blackstone:soul_fire" then
+		c = {fire = 2}
+	elseif (g.fire or 0) > 0 then
+		c = {fire = 1}
+	elseif (g.lava or 0) > 0 then
+		c = {lava = true}
+	else
+		c = {dps = def and def.damage_per_second or 0, solid = name ~= "air" and (g.opaque or 0) > 0
+			and (g.solid or 0) > 0 and (g.disable_suffocation or 0) == 0}
+	end
+	t[name] = c
+	return c
+end})
+
+-- Mineclonia's environment damage (its check_standin and apply_environment_damage), every
+-- 0.5 s over the nodes the collision box touches (the same bounds: a body standing against
+-- a wall is not inside it): lava 4 and 15 s on fire, soul fire 2 / fire 1 and 5 s on fire,
+-- a magma block under the feet 1 (none of these if _fire_resistant), an opaque solid node
+-- at eye height 1, and half a node's damage_per_second. Not ported: rain (never puts a
+-- kaiju out), powder snow, cramming. Drowning and falls hurt no kaiju on either game.
+local function env_damage(self, pos)
+	local cb, floor = self.collisionbox, math.floor
+	local eye = self.head_eye_height + pos.y
+	local hot = not self._fire_resistant
+	local damage, reason, burn, dps = 0, nil, nil, 0
+	local v = vector.zero()
+	for y = floor(cb[2] + pos.y + 0.5 + 0.01), floor(cb[5] + pos.y + 0.5 - 0.01) do
+		local eyeline = y - 0.5 <= eye and y + 0.5 >= eye
+		for x = floor(cb[1] + pos.x + 0.5 + 0.01), floor(cb[4] + pos.x + 0.5 - 0.01) do
+			for z = floor(cb[3] + pos.z + 0.5 + 0.01), floor(cb[6] + pos.z + 0.5 - 0.01) do
+				v.x, v.y, v.z = x, y, z
+				local c = env_class[core.get_node(v).name]
+				if c.lava then
+					if hot then damage, reason, burn = 4, "lava", 15 end
+				elseif c.fire then
+					if hot and damage < c.fire then damage, reason, burn = c.fire, "in_fire", 5 end
+				else
+					if eyeline and c.solid and damage < 1 then damage, reason = 1, "in_wall" end
+					dps = math.max(dps, c.dps)
+				end
+			end
+		end
+	end
+	if hot and damage < 1 and core.get_node(vector.offset(pos, 0, cb[2] - 0.5, 0)).name == "mcl_nether:magma" then
+		damage, reason = 1, "hot_floor"
+	end
+	if burn and (self._immersion_depth or 0) == 0 then mcl_burning.set_on_fire(self.object, burn) end
+	if dps > 0 then self:damage_mob("environment", dps * 0.5) end
+	if damage > 0 and not self.dead then self:damage_mob(reason, damage) end
+end
+
 -- Water from the feet up: (depth of the water above the feet, "water" or nil).
 function K:check_standin(dtime, pos)
+	if not self.dead and self:check_timer("env_damage", 0.5) then env_damage(self, pos) end
 	local cb = self.collisionbox
 	local feet = pos.y + cb[2]
 	local p = vector.new(math.floor(pos.x + 0.5), math.floor(feet + 0.5), math.floor(pos.z + 0.5))
@@ -492,11 +556,6 @@ function api.build_retaliation_target_rule(ignore)
 	end})
 end
 
--- Mineclonia's mobs alert others of their kind; VoxeLibre's don't send such alerts.
-function api.build_alert_receiver_rule()
-	return function() return nil end
-end
-
 function K:get_active_target() return self._active_target end
 
 -- The first rule that yields a target wins; it is told (is_current) when it supplied the
@@ -553,6 +612,14 @@ function K:pre_melee_attack(distance, delay, line_of_sight)
 	return distance <= self.reach and delay == 0 and line_of_sight
 end
 
+-- Mineclonia's knockback (mcl_util.calculate_knockback): the velocity a target moving at
+-- `v` gets when it is thrown along (x, z).
+local function knockback_vel(v, factor, standing, x, z)
+	local d = vector.normalize(vector.new(x, 0, z)) * factor
+	return vector.new((v.x / 2 + d.x * 20) * 0.546, standing and math.min(8, v.y / 2 + factor * 10) or v.y,
+		(v.z / 2 + d.z * 20) * 0.546)
+end
+
 function K:custom_attack()
 	local a = self.animation
 	if a.punch_start then
@@ -562,6 +629,22 @@ function K:custom_attack()
 	self:mob_sound("attack")
 	self.attack:punch(self.object, 1.0, {full_punch_interval = 1.0, damage_groups = {fleshy = self.damage}}, nil)
 end
+
+-- A kaiju's bite throws a player as on Mineclonia: VoxeLibre leaves players to the
+-- engine's knockback, the same for every hitter and without an upward part. With
+-- Mineclonia's gates (mcl_player's on_punchplayer and player_knockback): the player is
+-- alive, the punch's raw damage (before armour, effects, creative mode or enable_damage
+-- = false take it away) is above 0, and no shield blocks it (VoxeLibre's rule: raised,
+-- and the hitter in front). Mobs keep VoxeLibre's own knockback, about as far.
+core.register_on_punchplayer(function(player, hitter, _, _, _, damage)
+	local ent = hitter and hitter:is_valid() and hitter:get_luaentity()
+	if not kaiju_core.is_kaiju(ent) or player:get_hp() == 0 or damage <= 0 then return end
+	local d = vector.subtract(player:get_pos(), hitter:get_pos())
+	if mcl_shields.is_blocking(player) and vector.dot(player:get_look_dir(), d) <= 0 then return end
+	local v = player:get_velocity()
+	local kb = knockback_vel(v, (1 + (ent._attack_knockback or 0)) * 0.5, math.abs(v.y) < 0.2, d.x, d.z)
+	player:add_velocity(vector.subtract(kb, v))
+end)
 
 -- Walk at the target (a new path when it has moved a node, and now and then anyway, as
 -- Mineclonia's melee) and bite every melee_interval while it is in reach and in sight.
@@ -784,7 +867,7 @@ end
 -- Registration
 ------------------------------------------------------------------------
 
-local SOUNDS = {mobs_mc_ghast_hurt = "mobs_mc_enderman_hurt"} -- (VoxeLibre's ghast has no hurt sound)
+local SOUNDS = {mobs_mc_ghast_hurt = "mobs_mc_parrot_hurt"} -- (VoxeLibre's ghast has no hurt sound; pitched down like his trill)
 -- object properties: not copied onto the entity (the engine would read them from there)
 local PROPS = {hp_min = true, hp_max = true, physical = true, collisionbox = true, selectionbox = true, visual = true,
 	mesh = true, textures = true, visual_size = true, glow = true, makes_footstep_sound = true, stepheight = true}

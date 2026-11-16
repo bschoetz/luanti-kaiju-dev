@@ -49,6 +49,10 @@ tests/run.sh mothra_show 30       # plus one screenshot per second for 30 s
   - Frames taken after the shutdown are black, about 200 bytes each.
   - Match frames to scenes by file time against the `joins game` line in `client.log`.
 - The whole run is capped at 180 s (`timeout 180`). A timeout does not count as a failure in itself.
+- `KAIJU_TEST_CONF` (environment): lines appended to the run's settings after the scenario's
+  `test.conf`, so they win. `KAIJU_TEST_CONF='kaiju_duel_gap = 30' tests/run.sh kaiju_duel`
+  fixes the duel's starting gap; `KAIJU_TEST_CONF='enable_damage = false' tests/run.sh
+  kaiju_knockback` is that scenario's second run.
 
 What `run.sh` does:
 
@@ -225,6 +229,133 @@ slowest search of a run 1.8-4.2 ms (7.3 ms once, with other scenarios running in
 4-30 searches per course. `kaiju_triangle`: 39 searches, 0.9 ms on average, 2.6 ms at most.
 `gojira_smash`: 3 searches (1 partial, 2 without a path), 2.2 ms on average, 4.2 ms at most.
 
+### Results after the reach, ceiling and knockback changes (16 Nov 2026)
+
+Gojira's bite along his body and breath from where the bite ends (up to 48 nodes upwards),
+flyers under roofs, Ghidorah's landing spots, and the bite's knockback on players on
+VoxeLibre. Luanti 5.17, `vendor/mineclonia`, VoxeLibre 0.92.4, the installed Mineclonia for
+the new scenarios; up to five clients in parallel.
+
+**Balance** (Gojira's change only; acceptance: he wins every duel, median 90-105 HP, no run
+outside 50-175; the allies win the triangle with Gojira alive). `breaths / close` are his
+breaths and those started closer than 9 nodes, which he could not do before. No tuning was
+needed.
+
+| Run | Mineclonia (vendor) | VoxeLibre 0.92.4 |
+|---|---|---|
+| `kaiju_duel`, gap 20 | Gojira 95 (100 s, 1 / 0), 90 (102 s, 1 / 0) | 100 (98 s, 1 / 0) |
+| `kaiju_duel`, gap 30 | 95 (101 s, 1 / 0), 100 (100 s, 1 / 0) | 100, 100 (99 s, 1 / 0) |
+| `kaiju_duel`, gap 44 | 95 (103 s, 2 / 1), 90 (104 s, 1 / 0) | 100 (100 s, 1 / 0) |
+| `kaiju_duel`, median | 95 | 100 |
+| `kaiju_triangle` | allies, Ghidorah dead at 59, 61, 61, 61, 56 s; Gojira 249, 244, 297, 288, 281; Mothra 254, 215, 203, 242, 305; 5 / 3-4 each | allies at 60, 59, 60 s; Gojira 127, 191, 126; Mothra 248, 263, 284; 5-6 / 4-5 |
+
+Before the change, with the same counters: duel (gap 30) 95 HP, 1 / 0; triangle Gojira 216,
+4 / 0. In the triangle his close breaths come when Mothra's gust pushes Ghidorah just out
+of his bite; the fight is as long as before.
+
+**New scenarios and regressions.** "old code" is the commit before the change concerned.
+
+| Scenario | Mineclonia (vendor) | VoxeLibre 0.92.4 | Mineclonia (installed) |
+|---|---|---|---|
+| `kaiju_knockback` | RESULT ok (unchanged code path) | old code FAIL: Gojira 1.0 / 0, Ghidorah 0.9 / 0; now RESULT ok | RESULT ok |
+| `kaiju_knockback`, `enable_damage = false` | RESULT ok | first gate FAIL: 0 / 0; now RESULT ok | RESULT ok |
+| `gojira_reach` | old code FAIL (`ring`, `chest`, `high`); now RESULT ok (3 of 3 with the final scenario) | old code FAIL (the same three); now RESULT ok (2 of 2) | RESULT ok (2 of 2) |
+| `mothra_ceiling` | old code FAIL (all three rooms left through the roof); now RESULT ok in 19 of 22 runs (see the notes) | old code FAIL (the same); now RESULT ok in 15 of 16 runs | RESULT ok |
+| `ghidorah_ceiling` | old code FAIL (all three phases); now RESULT ok, 7 of 7 since the scenario waits for his target | old code FAIL (`low`; in `cavern` he left the loaded area and the client crashed once); now RESULT ok, 6 of 6 | RESULT ok |
+| `kaiju_duel` (final code) | Gojira 95, 90 | 95, 104 | 95, 95 |
+| `kaiju_triangle` (final code) | allies; Gojira 299, 232 | allies; Gojira 178, 61 | allies; Gojira 119 |
+| `kaiju_fight` | Gojira 138-176 after 60 s, Mothras 350 / 145-212 | Gojira 136-165, Mothras 350 / 145-178 | not run |
+| `gojira_overhead`, `kaiju_clinch`, `gojira_water` | RESULT ok | RESULT ok | not run |
+| `gojira_anim`, `gojira_punch` | exit 0, logs as before (6.15 n/s; speed kept) | exit 0 (6.0 n/s; speed kept) | not run |
+| `cthulhu_kaiju`, `cthulhu_grab`, `cthulhu_territory` | RESULT ok | RESULT ok (`cthulhu_intruder` too) | not run |
+| `mothra_terrain` | as before: 0 samples in the wall, 10.75 above it, husk dead, lands | 0 samples, 10.66 above it, husk at 3 HP, lands | not run |
+| `kaiju_truce`, `kaiju_truce_end`, `kaiju_dead_reload`, `kaiju_settings` | RESULT ok | RESULT ok; `kaiju_truce` once "gojira3 was not on a path at the kill (rerun)" in 2 of 7 runs (the scenario's own precondition; he was 31 and 46 nodes from Ghidorah then, probably breathing fire: not checked) | not run |
+| `ghidorah_fight`, `ghidorah_heads`, `ghidorah_show`, `mothra_show` | exit 0, logs complete | exit 0, logs complete | not run |
+| `compat.sh` | step 2: three kaiju, three eggs | step 2: three kaiju, three eggs | not run |
+
+Notes on the failures and oddities:
+
+- `mothra_ceiling`: the one failing run on Mineclonia had `cave_min_roof_gap=0.3` (she was
+  1.7 nodes above her cap for a moment, not in the roof), with five clients in parallel, one
+  of them generating a v7 world. Not seen again in 12 runs with a log line for it; the
+  likeliest cause is one long server step (the climb is stopped at the cap once a step). The
+  one on VoxeLibre: 9 samples `inside` in the low hall without leaving it, not seen again in
+  10 runs with a log line for it; not explained. Two more Mineclonia runs failed only because
+  she never crossed the lava pool, which was a 16 × 16 pool beside her start then.
+- `ghidorah_ceiling`: before the scenario waited for his target, one Mineclonia run failed
+  `low_walked` because he found the player only after the phase was over.
+- `gojira_reach`: one run each failed on a criterion that depended on chance and was made
+  firmer: `ring_first_dist=9.9` (he had walked off again when the breath was released), and
+  `ring_burned` on the installed Mineclonia (one breath, no flame hit the player; the phase
+  now has time for three).
+- Clearance checks (`FLIGHT` lines of `mothra_ceiling`): 15-20 rays per check on average, 40
+  at most. One client alone: 0.12-0.13 ms per check, 0.6-0.7 ms at most. Five clients in
+  parallel: 0.2-0.5 ms on average; the slowest check of a run 1.4-6.6 ms in 11 of 15 runs,
+  18-25 ms in three and 688 ms in one (wall-clock time of a loaded machine).
+
+**One run in a real Nether** (not a repository scenario; mapgen v7, seed 7, both games): the
+scenario looks for the tallest dry cavern column near (0, 0) of the Nether (68 and 74
+nodes high), lets the creative player hover in mid-cavern (on the floor the cavern's top is
+outside the active blocks, and the kaiju up there were unloaded), and spawns a Ghidorah on
+the floor and a Mothra above him. They fight for about a minute, until she is dead.
+
+- Mothra: never inside a node (0 of about 3000 samples per run), at least 2 nodes under the
+  roof, mostly flying right at her cap while he flies; over lava and floor at least 8 nodes
+  up while alive. In the first run she touched the roof once (2.1 nodes above her cap):
+  `fly_velocity` now stops the climb at the cap, after which she was at most 0.3 above it.
+- Ghidorah takes off (the cavern is high enough), stays 2-6 nodes under the roof, and lands
+  on netherrack, soul sand and crimson nylium. In the first runs he took the cap of a huge
+  crimson fungus above him for a roof and landed again at once, and flew through such caps
+  (10-24 samples "inside" `mcl_nether:nether_wart_block`): wart blocks and shroomlights now
+  count as foliage, like leaves (no roof, no landing ground, flown through). After that:
+  0 samples inside on VoxeLibre; on Mineclonia the 24 samples in a fungus cap he took off
+  through remain, by design. Once, after her death, none of his 9 landing spots among the
+  fungi passed and he came down where he was: on top of a fungus cap.
+- Clearance checks there: 15-17 rays on average, 0.15-0.22 ms, 0.7-1.7 ms at most (8.9 ms
+  once).
+- Not looked at: the nether's lava sea (the caverns found were dry below the kaiju), narrow
+  tunnels, a nether fortress, and players as targets.
+
+### Results after the VoxeLibre parity and Ghidorah combat changes (16 Nov 2026)
+
+VoxeLibre: Mineclonia's gravity and environment damage, the parrot's hurt sound. Both
+games: Gojira stands through his bite; Ghidorah's beams pass through small mobs and deal 1
+per head to players; side-head volleys at a melee target with his bite at 10; smashing in
+the air. Luanti 5.17, `vendor/mineclonia`, VoxeLibre 0.92.4; two clients in parallel.
+
+**Balance** (Gojira's HP left of 500 in the duel; acceptance as before: he wins every
+duel, no run outside 50-175; the allies win the triangle with Gojira alive). No tuning
+after the first values (volley 1 per head and tick every 12 s, bite 10).
+
+| Run | Mineclonia (vendor) | VoxeLibre 0.92.4 |
+|---|---|---|
+| Before: `kaiju_duel`, gap 30 | 95, 95 (101 s) | 100, 100 (99 s) |
+| Before: `kaiju_triangle` | allies at 62 s; Gojira 215, Mothra 293 | allies at 57 s; Gojira 231, Mothra 275 |
+| After the VoxeLibre and bite changes: duel, gap 30 | 90 (102 s) | 100 (99 s) |
+| After those: triangle | allies at 59 s; Gojira 299, Mothra 239 | allies at 59 s; Gojira 294, Mothra 233 |
+| After all: `kaiju_duel`, gap 30 | 92, 89, 112, 80 (96-101 s) | 84, 84, 84, 84 (99 s) |
+| After all: gap 20 | 80 (100 s) | 84 (98 s) |
+| After all: gap 44 | 100 (102 s) | 84 (100 s) |
+| After all: `kaiju_triangle` | allies at 57, 58, 60, 61 s; Gojira 314, 272, 216, 228; Mothra 242, 254, 197, 203 | allies at 56, 58, 60, 59 s; Gojira 285, 288, 282, 286; Mothra 254, 236, 278, 278 |
+
+**Scenarios** on the final code (both games unless noted): `RESULT ok` for
+`ghidorah_ceiling`, `gojira_reach`, `mothra_ceiling`, `kaiju_knockback`, `cthulhu_sea`,
+`nav_wall`, `nav_wall_wide`, `nav_cliff`, `nav_forest`, `nav_water`, `nav_protected`,
+`nav_far`, `nav_pace`, `kaiju_clinch`, `kaiju_settings`, and the six new ones
+(`kaiju_physics`, `kaiju_env`, `gojira_bite`, `ghidorah_beam`, `ghidorah_sidemain`,
+`ghidorah_airsmash` with its two extra runs). `ghidorah_fight` and `kaiju_fight` (no
+RESULT line) ran as described; in one `ghidorah_fight` run on Mineclonia he stood in a
+blast crater 3 nodes below the player, where the side heads can reach a player in melee,
+and fired a volley at him.
+
+`gojira_smash`: Mineclonia `RESULT ok`. VoxeLibre `RESULT FAIL: gold=0; emerald=0`: the
+chest stayed in 3 of 3 runs (one was cut short by the 180 s cap), and also with the code
+from before these changes in a run on the same day: the
+pathfinder now leads him around the forest and into the ring from the east, past the house
+with the chest (earlier runs: no path, and a straight bulldoze through it). Which of the
+two happens depends on how far the 4 ms search gets; the scenario's chest check assumes
+the straight line.
+
 ## Scenarios
 
 Times are seconds after the player joins. Every scenario sets noon (`set_timeofday(0.5)`) on join.
@@ -281,6 +412,35 @@ Times are seconds after the player joins. Every scenario sets noon (`set_timeofd
     20 HP.]
   - C: `y` reaches 8.5 (the ground) before `removed`, about 2.6 s after the kill. [Removed in
     mid-air at y 30.7.]
+
+### `mothra_ceiling`: Mothra under a roof
+
+- **Settings:** creative, `viewing_range = 160`, `mobs_spawn = false`. Depends on `mothra,
+  kaiju_test`.
+- **Scene:** three closed rooms on the flat world, built one after the other with
+  `kaiju_test.fill` after their area is generated: floor at y = 8.5, walls 1 node thick, a roof 3
+  nodes thick. The player stands in a corner. A Mothra is spawned in the middle and wanders
+  for 20 s:
+  - `cave`: 64 × 64, stone, the roof 22 above the floor; she starts at y = 14.
+  - `low`: 40 × 40, the roof 6 above the floor (she is 3.6 tall and needs 5.6); she starts
+    1.2 above the floor.
+  - `nether`: 48 × 48, netherrack, a bedrock roof 28 above the floor, a 32 × 32 lava pool in
+    the middle of the floor; she starts above it at y = 22.
+- **Logs:** `<room>: inside at …` the first time her feet or the top of her body are in a
+  walkable node; `<room>: end at …`; `FLIGHT refreshes=… rays=… (… per refresh, max …) avg_us=…
+  max_us=…` (`kaiju_core._flight_stats`); `VALUES <room>_inside, _escaped, _min_roof_gap,
+  _min_floor_gap, _max_rise, _moved` for each room, `nether_min_lava_gap`, `max_rays`;
+  `RESULT …`.
+- **Runtime:** about 80 s.
+- **Good:** `RESULT ok`: in every room `inside = 0` and `escaped = false`; `cave` and `nether`
+  keep at least a node to the roof (measured 1.7-1.9 and 2.5-7); `low_max_rise ≤ 1` (she stays
+  at 1.0 above the floor, 1.2 under the roof); over the lava she is at least 5 nodes up
+  (measured 15-21); she moves (`cave_moved ≥ 8`, `low_moved ≥ 4`); `max_rays ≤ 40`. The times
+  are logged, not checked: with other clients running they jump (see the results below).
+- Before the change she left all three rooms through the roof on both games (`inside` 60-77
+  samples per room, `escaped=true`, ending 20-40 nodes above the roofs).
+- The walls are one node thick on purpose: the first version of the check looked at the
+  samples only, 4 nodes apart, and she flew through the walls between them.
 
 ### `kaiju_fight`: two Mothras vs Gojira
 
@@ -437,6 +597,32 @@ Times are seconds after the player joins. Every scenario sets noon (`set_timeofd
   which proves that the stock path really zeroes his velocity. After target loss, `attack`,
   `_bulldoze_time` and `stupid_target` are all `nil`.
 
+### `kaiju_knockback`: a kaiju's bite throws a player, on both games
+
+- **Settings:** survival, `viewing_range = 140`, `mobs_spawn = false`. Depends on `gojira,
+  ghidorah, kaiju_test`.
+- **Scene:** the player stands at (0, 9, −10), HP topped up every step. A Gojira without any AI
+  (`attack_type = false`, no targeting rules, no `ai_functions`) is spawned 5 nodes away; the
+  scenario sets `e.attack = player` and calls `e:custom_attack()` once. Then the same with a
+  Ghidorah 6 nodes away. For 1.5 s after each bite the player's largest horizontal displacement
+  and rise are taken.
+- **Logs:** `enable_damage = …`, `VALUES gojira_player_flat=… gojira_player_rise=…
+  ghidorah_player_flat=… ghidorah_player_rise=…`, `RESULT …`.
+- **Runtime:** about 15 s.
+- **Good:** `RESULT ok`: Gojira (`_attack_knockback = 3`) moves the player at least 5 nodes and
+  lifts him at least 1; Ghidorah (0) 0.5 to 4 nodes and at least 0.3 up. Measured: 6.2 (or
+  16.6, see below) / 1.5 and 1.3 / 0.6 on both games. Before `vl.lua` had Mineclonia's knockback, VoxeLibre gave 1.0 / 0 and
+  0.9 / 0 (the engine's knockback only).
+- **Second run, without damage:** `KAIJU_TEST_CONF='enable_damage = false' tests/run.sh
+  kaiju_knockback`. Mineclonia throws the player all the same (its gate is the punch's raw
+  damage, not the HP lost). VoxeLibre with the layer's first gate ("the bite took HP"): 0 / 0,
+  a play-test finding; with Mineclonia's gates the same as Mineclonia.
+- Gojira's throw comes out as either 6.2 or 16.6 nodes, on both games and with or without
+  damage (about half of the runs each); the rise is 1.5 in both. Which one is not understood:
+  the velocity given is the same, and the player's movement is computed by the client.
+- Not covered: a raised shield, creative mode, mobs as victims (they keep each game's own
+  knockback).
+
 ### `ghidorah_show`: King Ghidorah's model and animations (visual)
 
 - **Settings:** creative, `viewing_range = 220`, `fov = 72`. Depends on `ghidorah, gojira` (for the
@@ -525,6 +711,46 @@ Times are seconds after the player joins. Every scenario sets noon (`set_timeofd
     or two. Good: `stuck take-off: flying=true _bulldoze_time=nil stuck_flights=1` (the take-off
     ends the bulldoze; with it left set he took off again after landing).
 
+### `ghidorah_ceiling`: roofs, a blocked flight, and where he lands
+
+- **Settings:** survival, `viewing_range = 160`, `mobs_spawn = false`, **`kaiju_smash_blocks =
+  false`** (nothing clears his way or his landing spot). Depends on `ghidorah, kaiju_test`.
+- **Scene:** three phases at z = 0, 200 and 400. Each clears the flat world's trees, builds its
+  scene, pins the survival player at (60, 9, z) (HP never below 1) and spawns a fresh Ghidorah at
+  (0, 8.6, z): 60 nodes away, beyond `FAR_TARGET`, so he wants to fly. A phase's time runs from
+  the moment he has his target (on Mineclonia that sometimes takes several seconds).
+  - `low` (15 s): a stone roof 18 nodes above the floor over both of them. He is 15 tall and
+    needs 21 to take off.
+  - `cavern` (30 s): a roof 40 above the floor; between x = 25 and 45 it hangs down to 16 above
+    the floor, across the whole width: high enough to walk under, too low to fly under (17).
+  - `forest` (30 s): open sky. Over his start a canopy of leaves 17 above the ground (with a
+    few trunks in it, away from his column, or the leaves decay). Around the player low trees
+    every 4 nodes (trunk 3, leaves on top: he sees the player over them), except a treeless
+    patch of 17 × 17 around the player and a 10 × 10 clearing 12 nodes west of him; both have
+    a netherrack floor.
+- **Logs:** every 3 s `<phase>: pos=… flying=… land=… target=…`; `<phase>: take-off at …`,
+  `<phase>: touch-down at …`, `<phase>: end at …`; `VALUES low_takeoffs, low_inside, low_max_top,
+  low_walked, cavern_takeoffs, cavern_inside, cavern_max_top, cavern_flying, forest_takeoffs,
+  forest_inside, forest_landing_trees, forest_landing_node, forest_clearing_dist`; `RESULT …`.
+- **Runtime:** about 100 s, up to 160 s when he is slow to find his target.
+- **Good:** `RESULT ok`:
+  - `low`: no take-off, never inside a node, and he walks (`low_walked ≥ 10`, measured 50-57:
+    he reaches the player).
+  - `cavern`: 1 or 2 take-offs in 30 s, never inside a node, the top of his body below y =
+    47.5 (measured 29), on the ground at the end. He takes off, the first clearance check
+    finds the low section in the way, and he comes down after a hop; on foot for 20 s
+    (`_no_fly`) he walks under the section. A second take-off happens when the melee's stuck
+    detection asks for one near the player; it ends the same way.
+  - `forest`: he takes off through the leaves, and his first touch-down is on netherrack with
+    no trunk or leaf node in his body box (`forest_landing_trees = 0`). `forest_clearing_dist`
+    (logged) is 0.5-0.8 when it is the clearing.
+- Before the change, on both games: `low_takeoffs=1` (through the roof; he landed on top of
+  it, `low_inside` 22-43); in `cavern` he flew up through the roof (`cavern_max_top=81`,
+  `cavern_inside=39`) and left the loaded area; in `forest` he came down on the trees
+  (`forest_landing_trees` 16-54 or the landing node a leaf).
+- `forest_inside` counts the canopy he flies through (leaves are walkable nodes) and is not
+  checked.
+
 ### `gojira_arrows`: arrows at Gojira's chest and head
 
 - **Settings:** creative, `viewing_range = 140`. Depends on `gojira, mcl_bows`.
@@ -549,7 +775,8 @@ Times are seconds after the player joins. Every scenario sets noon (`set_timeofd
 - **Logs:** `spawned`, then once a second `t=N GOJIRA hp=… target=… anim=… dist=<to Ghidorah,
   horizontal> | MOTHRA hp=… target=… | GHIDORAH hp=… target=… flying=… alt=… anim=… heads=c/l/r`.
   When Ghidorah or Gojira is dead (or after 140 s): `END winner=allies|ghidorah|draw|none t=N
-  gojira=<hp> mothra=<hp> ghidorah=<hp>`, and 8 more samples.
+  gojira=<hp> mothra=<hp> ghidorah=<hp> breaths=N close=N up_far=N` (Gojira's breaths, as in
+  `kaiju_duel`), and 8 more samples.
 - **Runtime:** shutdown 8 s after the `END` line, usually at about 75 s; at 150 s at the latest.
 - **Good:** Gojira and Mothra show `target=ghidorah` from the first samples (their first targeting
   rule), and he targets one of them. `END winner=allies` with Gojira alive: this is one of the two
@@ -569,7 +796,10 @@ Times are seconds after the player joins. Every scenario sets noon (`set_timeofd
   volleys he gets in before the melee) is what differs in a real game.
 - **Logs:** `spawned gap=N`, then once a second `t=N dist=… | GOJIRA hp=… anim=… | GHIDORAH hp=…
   anim=… flying=… beam=… heads=c/l/r`, and when one is dead (or after 140 s) `END
-  winner=gojira|ghidorah|draw|none t=N gojira=<hp> ghidorah=<hp> gap=N`.
+  winner=gojira|ghidorah|draw|none t=N gojira=<hp> ghidorah=<hp> gap=N breaths=N close=N
+  up_far=N`: Gojira's breaths, those started closer than 9 nodes (feet to feet, the old
+  minimum) and upward ones from beyond 32 (the old maximum). The setting `kaiju_duel_gap`
+  fixes the gap (`KAIJU_TEST_CONF`, §Usage).
 - **Runtime:** shutdown 2 s after the `END` line, usually at about 107 s. That is close enough to
   `run.sh`'s 180 s cap that more than five or six clients in parallel can push a run over it.
 - **Good:** `END winner=gojira` with 50 to 175 HP left (10 to 35 %): he should win, narrowly. Six
@@ -676,9 +906,43 @@ Times are seconds after the player joins. Every scenario sets noon (`set_timeofd
   never bit the target above him`.
 - **Runtime:** shutdown at 20 s.
 - **Good:** `RESULT ok`, `bites` counting up from about t = 6. The standoff gap to a player is
-  4.7 nodes horizontally; 5.8 nodes up that is 7.5 in 3D, beyond his reach of 7, so he has to
-  close in to about 3.9. With the 3D check in `kaiju_core`'s `at_standoff` reverted he stood at
-  `flat=4.4 dist=7.3` with `bites=0` for the whole run.
+  4.7 nodes horizontally; 5.8 nodes up that is 7.5 in 3D from his feet. When the bite was
+  measured from his feet (reach 7) he had to close in to about 3.9, and with the 3D check in
+  `kaiju_core`'s `at_standoff` reverted he stood at `flat=4.4 dist=7.3` with `bites=0` for the
+  whole run. Since his bite is measured from his body's axis (`_bite_height`), the player is in
+  reach at the standoff gap and he bites from there (`gojira_reach` has the same at 8 nodes up).
+
+### `gojira_reach`: no gap between bite and breath; flyers up to 48 nodes
+
+- **Settings:** survival, `viewing_range = 140`, `mobs_spawn = false`. Depends on `gojira,
+  kaiju_test`.
+- **Scene:** four phases, each with a fresh Gojira at (0, 8.6, 20) and the player pinned at
+  (0, 8.5 + h, −10) (`gravity = 0`, put back when knocked away, HP topped up):
+  - `ring` (h = 1, 24 s: time for three breaths, as not every breath hits a player): the player stands on an obsidian node inside an obsidian ring of
+    radius 5, 3 nodes high. Obsidian is immune to smashing, so the ring stops Gojira 7.9 nodes
+    away: beyond his bite (7), inside the old shortest breath (9). His breath is held back
+    (`_breath_cooldown = 1e9`) until he has been within 8.7 nodes for a second and is still
+    that close, or he would breathe on the way (or from 9.9 nodes, when he walks off again
+    to look for a way around the ring).
+  - `chest` (h = 8, 14 s), breath off: the player hovers at chest height.
+  - `head` (h = 26.5, 12 s): 12 nodes above his head.
+  - `high` (h = 40, 18 s).
+- **Logs:** per breath `<phase>: breath at dist <3D, feet to feet>, flat <horizontal>, up=…`;
+  per phase `<phase>: end, flat …, dist …`; `VALUES <phase>_breaths, _breaths_up, _first_dist,
+  _bites, _burned, _gojira_hp` for each phase; `RESULT …`.
+- **Runtime:** about 95 s.
+- **Good:** `RESULT ok`:
+  - `ring_breaths ≥ 1` with `ring_first_dist` between 7 and 9 (measured 7.9-8.1), and
+    `ring_burned` (a flame set the player on fire);
+  - `chest_bites ≥ 1` (measured 6-7: he stops below the player and bites);
+  - `head_breaths_up ≥ 1`;
+  - `high_breaths_up ≥ 1` and `high_burned`: he starts at 48.0 nodes (`BREATH_UP_MAX_DIST`)
+    and again from below at about 40;
+  - `<phase>_gojira_hp = 500` in every phase: his flames don't hit himself.
+- Before the change (both games): `ring_breaths=0`, `chest_bites=0`, `high_breaths_up=0`.
+  With the new reach but the old flame lifetime, `high_burned` failed on Mineclonia in 4 of 4
+  runs: the flames' 80 server steps ended after 42 nodes in the test client (0.024 s per
+  step). `shoot_flame` now gives every flame at least 3 s.
 
 ### `kaiju_dig_callbacks`: dig callbacks that expect a player
 
@@ -997,6 +1261,37 @@ that phase never finished. Values without a range are informative.
   `screenshots/<n>-<name>.png` of the published repository.
 - **Good:** each kaiju whole, lit (not black: a puppet in a map block the client doesn't have
   yet is drawn black) and clearly in frame; no text on screen.
+
+### VoxeLibre parity and Ghidorah in combat: `kaiju_physics`, `kaiju_env`, `gojira_bite`, `ghidorah_beam`, `ghidorah_sidemain`, `ghidorah_airsmash`
+
+Six short scenarios, each ending with `VALUES …` and `RESULT ok` or `RESULT FAIL: …`. All
+depend on `kaiju_test`; all failed before the change they belong to (16 Nov 2026).
+
+| Scenario | Scene | Good (measured, Mineclonia / VoxeLibre) | Before |
+|---|---|---|---|
+| `kaiju_physics` (10 s) | A passive Ghidorah on flat ground gets Mothra's gust: `add_velocity(22, 6, 0)`. Time above the ground and drift within 2 s. | `air` 0.25-0.55 s, `drift` 5-8.5 nodes (0.3 s, 5.9 / 0.3 s, 6.6) | VoxeLibre 0.8 s, 9.2 (gravity 14.7) |
+| `kaiju_env` (12 s) | Passive, pinned kaiju, smashing off: Mothra and a Gojira over lava sources; a Gojira and a Ghidorah with a cobble column inside the body up through the head. HP lost in 4 s. | `mothra_lava` ≥ 16 (35 / 35), `gojira_lava` 0, `gojira_wall` 4-12 (8 / 8), `ghidorah_wall` 0 | VoxeLibre: 0 everywhere |
+| `gojira_bite` (30 s) | Survival player (kept alive) 30 nodes away, breath off; Gojira chases and bites for 25 s. Distance he moves while the `punch` clip plays. | `per_bite` ≤ 1.5 nodes with at least 3 bites (0.4 / 0.6, 6 bites) | 3.6 / 4.2 per bite |
+| `ghidorah_beam` (35 s) | Ghidorah pinned 20 nodes from a pinned survival player; the HP lost per volley. `bare`: all heads, no armour. `cow`: side heads severed, a cow held on the centre head's line; the left stump's hit box against the neck joint. `iron`: all heads, full iron armour. | `bare` 16-30 (24 / 24), `cow_hurt` ≥ 6 (24), `behind_cow` 3-12 (8 / 8), `stump_off` ≤ 0.5 (0.0), `iron` 4-30 (10 / 8) | `bare` 72, `behind_cow` 0, `stump_off` 1.8 |
+| `ghidorah_sidemain` (60 s) | Gojira and Ghidorah in melee for 40 s (both kept alive, the player 55 nodes away), then Gojira removed and the survival player pinned 5 nodes in front of Ghidorah for 14 s. Counts volleys with `_beam_side == "main"`. | `main_volleys` 2-5 (3 / 3), `main_damage` ≥ 1 (48 / 48), `player_volleys` 0, `target` player | no main volleys |
+| `ghidorah_airsmash` (50 s) | A survival player on a realm barrier 15 nodes up (not pointable, so "in the air" for him); Ghidorah circles it for 45 s. Across the circle: a cobble wall 25 high, a band of oak leaves with trunks, a stone ridge 8 high. Beam blasts off. Also logs the time of a smash pass in the air. | `wall_removed` ≥ 30 (288 / 264), `wall_y` ≤ 27 (25.6 / 25.5: through it), `leaves_removed` ≥ 10 (553 / 530), `stone_removed` 0, `ridge_y` ≥ 26 (30.2: over it) | nothing removed, `wall_y` 47 |
+
+`ghidorah_airsmash` has two more runs:
+`KAIJU_TEST_CONF='kaiju_smash_blocks = false' tests/run.sh ghidorah_airsmash` (nothing is
+removed and he flies over the wall, `wall_y` ≥ 40: 47.8 / 46.5) and
+`KAIJU_TEST_CONF='kaiju_test_protect = true' …` (the scenario protects the wall: it stays
+and he flies over it, 47.6 / 46.9, while the leaves still fall). A smash pass in the air
+took 4.6 ms (Mineclonia) and 2.0 ms (VoxeLibre) on average; one pass on Mineclonia took
+212 ms, when a whole canopy went at once.
+
+`ghidorah_heads` now also logs Gojira's distance and, at t = 40, `COUNTS side=N
+melee_full=M`: the samples after t = 8 in a side volley, and in a full volley at a Gojira
+closer than 10 nodes. It is not a pass/fail line, because the brawl takes a different
+course every run. Nine runs after the changes: Mineclonia `side` 4, 7, 10, 6, 6 with
+`melee_full` 0 in all; VoxeLibre `side` 8, 8, 9, 13, 0 (he flew after Mothra for the whole
+run) with `melee_full` 0, 5, 0, 0, 0 (twice Mothra's gust threw him 12 nodes off and Gojira
+breathed fire from there instead of walking back in). On VoxeLibre before the gravity
+change: `side` 0, `melee_full` 1.
 
 ### `kaiju_dead_reload`: a kaiju killed just before shutdown
 

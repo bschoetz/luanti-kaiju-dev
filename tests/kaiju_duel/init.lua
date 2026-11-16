@@ -3,9 +3,29 @@
 -- ghidorah=<hp>" line. Wanted: Gojira wins narrowly (see kaiju/ghidorah/README.md, Balance).
 -- They start 20, 30 or 44 nodes apart, picked at random per run ("spawned gap=..."): on flat
 -- ground the fight is otherwise the same every time, and the opening (who gets how many
--- volleys in before the melee) is what differs in a real game.
+-- volleys in before the melee) is what differs in a real game. The setting kaiju_duel_gap
+-- fixes it: KAIJU_TEST_CONF='kaiju_duel_gap = 30' tests/run.sh kaiju_duel. END also counts
+-- Gojira's breaths.
 local function L(s) core.log("action", "[test] " .. s) end
 local LIMIT = 140
+
+-- Gojira's breaths: all, those from closer than 9 nodes (feet to feet; the old minimum)
+-- and upward ones from beyond 32 (the old maximum).
+local breaths, close, up_far, breathing = 0, 0, 0, false
+local function count_breaths(g)
+	core.register_globalstep(function()
+		local e, t = g:get_luaentity(), nil
+		if not e then return end
+		if e._breath_time and not breathing then
+			t = e.attack and e.attack:is_valid() and e.attack:get_pos()
+			local d = t and vector.distance(g:get_pos(), t) or 20
+			breaths = breaths + 1
+			if d < 9 then close = close + 1 end
+			if d > 32 and e._breath_up then up_far = up_far + 1 end
+		end
+		breathing = e._breath_time ~= nil
+	end)
+end
 
 core.register_on_joinplayer(function(player)
 	core.set_timeofday(0.5)
@@ -15,14 +35,16 @@ core.register_on_joinplayer(function(player)
 		core.bulk_set_node(list, {name = "mcl_core:cobble"})
 		player:set_pos({x = 0, y = 23, z = -40}); player:set_look_horizontal(0); player:set_look_vertical(0.15)
 		core.after(2, function()
-			local gap = ({20, 30, 44})[math.random(3)]
+			local gap = tonumber(core.settings:get("kaiju_duel_gap")) or ({20, 30, 44})[math.random(3)]
 			local g = core.add_entity({x = -gap / 2, y = 8.6, z = 15}, "gojira:gojira")
 			local k = core.add_entity({x = gap / 2, y = 8.6, z = 15}, "ghidorah:ghidorah")
 			L("spawned gap=" .. gap)
+			count_breaths(g)
 			local done
 			local function finish(t, winner, ge, ke)
 				done = true
-				L(("END winner=%s t=%d gojira=%d ghidorah=%d gap=%d"):format(winner, t, math.max(ge.health, 0), math.max(ke.health, 0), gap))
+				L(("END winner=%s t=%d gojira=%d ghidorah=%d gap=%d breaths=%d close=%d up_far=%d"):format(winner, t,
+					math.max(ge.health, 0), math.max(ke.health, 0), gap, breaths, close, up_far))
 				core.after(2, core.request_shutdown, "done")
 			end
 			for t = 1, LIMIT do

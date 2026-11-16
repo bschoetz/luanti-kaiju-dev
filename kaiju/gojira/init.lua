@@ -7,9 +7,10 @@ local UNIT = SCALE / 10      -- nodes per model unit
 local BREATH_TIME = 2.5      -- seconds; matches the "breath" animation (50 frames at 20 fps)
 local BREATH_WINDUP = 0.8    -- rear-up part of the animation before the first flame
 local BREATH_COOLDOWN = 7.0
-local BREATH_MIN_DIST = 9    -- closer than this he stomps/bites instead
-local BREATH_MAX_DIST = 32
+local BREATH_MAX_DIST = 32   -- feet to feet; closer than his bite reaches he bites instead
+local BREATH_UP_MAX_DIST = 48 -- the upward breath (flyers) carries further
 local FLAME_INTERVAL = 0.1
+local FLAME_TIME = 3         -- seconds a flame flies at least: 66 nodes, beyond BREATH_UP_MAX_DIST
 -- Mouth position in the breath pose and ground covered by one walk cycle (frames 70-110),
 -- both in model units as printed by tools/gojira_model.py. mcl_mobs plays walk at
 -- walk_speed * velocity fps, so walk_speed = frames per node keeps the feet planted.
@@ -40,7 +41,7 @@ mcl_mobs.register_arrow("gojira:flame", {
 	collisionbox = {-0.4, -0.4, -0.4, 0.4, 0.4, 0.4},
 	glow = 14,
 	_is_fireball = true,
-	_lifetime = 80, -- counted in server steps, not seconds; long enough to reach BREATH_MAX_DIST
+	_lifetime = 80, -- counted in server steps, not seconds: see shoot_flame
 	hit_player = burn,
 	hit_mob = burn,
 	hit_node = function(self, pos)
@@ -86,6 +87,7 @@ local gojira = {
 	water_velocity = 3.0,      -- swim speed; measured ~5 nodes/s in deep water (default 0.4 is a crawl)
 	damage = 18,
 	reach = 7,                 -- measured from the centre, so the big body needs more
+	_bite_height = 14.5,       -- ... and from his whole axis, feet to head (kaiju_core.bite_dist)
 	melee_interval = 1.5,
 	_attack_knockback = 3,
 	attack_type = "melee",     -- melee up close; fire breath is layered on top in attack_melee
@@ -137,7 +139,7 @@ local function target_above(self, target_pos)
 	return math.atan2(dy, flat) > BREATH_UP_ANGLE
 end
 
-local function shoot_flame(self, target_pos)
+local function shoot_flame(self, target_pos, dtime)
 	local from = mouth_pos(self, self._breath_up)
 	local aim = vector.offset(target_pos, (math.random() - 0.5) * 2, 0.8 + math.random(), (math.random() - 0.5) * 2)
 	local obj = core.add_entity(from, self.arrow)
@@ -147,6 +149,11 @@ local function shoot_flame(self, target_pos)
 	ent.switch = 1
 	ent.owner_id = tostring(self.object)
 	ent._shooter = self.object
+	-- Mineclonia counts a flame's _lifetime in server steps, and in singleplayer a step is
+	-- as short as a frame: 80 of them ended after 30 to 40 nodes. (VoxeLibre: seconds.)
+	if not kaiju_core.voxelibre then
+		ent._lifetime = math.max(ent._lifetime, math.ceil(FLAME_TIME / math.max(dtime, 0.005)))
+	end
 end
 
 local function breath_particles(self, target_pos)
@@ -173,7 +180,7 @@ function gojira:attack_melee(attach_pos, self_pos, dtime, target_pos, line_of_si
 		self._flame_timer = (self._flame_timer or 0) - dtime
 		if self._flame_timer <= 0 then
 			self._flame_timer = FLAME_INTERVAL
-			shoot_flame(self, target_pos)
+			shoot_flame(self, target_pos, dtime)
 			breath_particles(self, target_pos)
 		end
 		if self._breath_time <= 0 then
@@ -185,25 +192,48 @@ function gojira:attack_melee(attach_pos, self_pos, dtime, target_pos, line_of_si
 		return
 	end
 
+	-- Fire for everything his bite can't reach (no gap between the two), up to
+	-- BREATH_MAX_DIST, and further at a target he breathes upwards at.
 	local dist = vector.distance(attach_pos, target_pos)
-	if self._breath_cooldown == 0 and line_of_sight
-			and dist >= BREATH_MIN_DIST and dist <= BREATH_MAX_DIST then
-		self._breath_time = BREATH_TIME
-		self._flame_timer = BREATH_WINDUP
-		self._punch_animation_timeout = nil
-		self:halt_in_tracks(true)
-		self:cancel_navigation()
-		self._breath_up = target_above(self, target_pos)
-		self:set_animation(self._breath_up and "breath_up" or "breath")
-		self:mob_sound("shoot_attack")
-		return
+	if self._breath_cooldown == 0 and line_of_sight and dist <= BREATH_UP_MAX_DIST
+			and kaiju_core.bite_dist(self, attach_pos, target_pos) > self.reach then
+		local up = target_above(self, target_pos)
+		if up or dist <= BREATH_MAX_DIST then
+			self._breath_time = BREATH_TIME
+			self._flame_timer = BREATH_WINDUP
+			self._punch_animation_timeout = nil
+			self:halt_in_tracks(true)
+			self:cancel_navigation()
+			self._breath_up = up
+			self:set_animation(up and "breath_up" or "breath")
+			self:mob_sound("shoot_attack")
+			return
+		end
 	end
 
 	kaiju_core.update_bulldoze(self, dtime, attach_pos, target_pos)
-	return mob_class.attack_melee(self, attach_pos, self_pos, dtime, target_pos, line_of_sight)
+	mob_class.attack_melee(self, attach_pos, self_pos, dtime, target_pos, line_of_sight)
+	-- He stands through his bite clip (walking on, he slid about 4 nodes per bite), and
+	-- plans his way again in the step it ends (gopath below plans none meanwhile).
+	if (self._punch_animation_timeout or 0) > 0 then
+		if self:is_navigating() then
+			self:cancel_navigation()
+			self:halt_in_tracks(false, true)
+		end
+		self._target_pos, self._gopath_delay = nil, 0
+	end
+end
+
+-- He bites whatever is within reach of his body, not only of his feet (mcl_mobs measures
+-- feet to feet: a target at chest height was out of reach while he stood right below it).
+function gojira:pre_melee_attack(distance, delay, line_of_sight)
+	local t = self.attack and self.attack:is_valid() and self.attack:get_pos()
+	if t then distance = kaiju_core.bite_dist(self, self.object:get_pos(), t) end
+	return mob_class.pre_melee_attack(self, distance, delay, line_of_sight)
 end
 
 function gojira:gopath(...)
+	if self.attack and (self._punch_animation_timeout or 0) > 0 then return true end -- (biting: attack_melee)
 	return kaiju_core.gopath(self, ...)
 end
 
@@ -294,7 +324,6 @@ gojira._targeting_rules = {
 	-- esp: once he has seen you, hiding behind walls doesn't shake him off (he bulldozes through)
 	mcl_mobs.build_nearest_target_rule("player", nil, nil, nil, true),
 	mcl_mobs.build_nearest_target_rule("mobs_mc:iron_golem", {"mobs_mc:iron_golem"}, nil, nil, nil),
-	mcl_mobs.build_alert_receiver_rule(),
 }
 
 -- punches and arrows must not stop him dead (see kaiju_core.no_knockback)

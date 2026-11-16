@@ -12,6 +12,24 @@ local function hp(e) return e and e.health or -1 end
 local LIMIT = 140 -- seconds; the fight usually ends after 60 to 100
 local ended
 
+-- Gojira's breaths: all, those from closer than 9 nodes (feet to feet; the old minimum)
+-- and upward ones from beyond 32 (the old maximum).
+local breaths, close, up_far, breathing = 0, 0, 0, false
+local function count_breaths(g)
+	core.register_globalstep(function()
+		local e, t = g:get_luaentity(), nil
+		if not e then return end
+		if e._breath_time and not breathing then
+			t = e.attack and e.attack:is_valid() and e.attack:get_pos()
+			local d = t and vector.distance(g:get_pos(), t) or 20
+			breaths = breaths + 1
+			if d < 9 then close = close + 1 end
+			if d > 32 and e._breath_up then up_far = up_far + 1 end
+		end
+		breathing = e._breath_time ~= nil
+	end)
+end
+
 core.register_on_joinplayer(function(player)
 	core.set_timeofday(0.5)
 	core.after(2, function()
@@ -24,6 +42,7 @@ core.register_on_joinplayer(function(player)
 			local k = core.add_entity({x = 12, y = 8.6, z = 25}, "ghidorah:ghidorah")
 			local m = core.add_entity({x = -20, y = 30, z = 0}, "mothra:mothra")
 			L("spawned")
+			count_breaths(g)
 			local done
 			for t = 1, LIMIT do
 				core.after(t, function()
@@ -41,9 +60,9 @@ core.register_on_joinplayer(function(player)
 					local gd, kd = not ge or ge.dead, not ke or ke.dead
 					if (gd or kd or t == LIMIT) and not ended then
 						ended = t
-						L(("END winner=%s t=%d gojira=%d mothra=%d ghidorah=%d"):format(
+						L(("END winner=%s t=%d gojira=%d mothra=%d ghidorah=%d breaths=%d close=%d up_far=%d"):format(
 							kd and (gd and "draw" or "allies") or gd and "ghidorah" or "none", t,
-							math.max(hp(ge), 0), math.max(hp(me), 0), math.max(hp(ke), 0)))
+							math.max(hp(ge), 0), math.max(hp(me), 0), math.max(hp(ke), 0), breaths, close, up_far))
 						local nav = kaiju_core._vl_nav_stats -- (VoxeLibre: the path searches, for information)
 						if nav then
 							L(("NAV plans=%d partial=%d failed=%d avg_us=%d max_us=%d"):format(nav.plans, nav.partial, nav.failed,

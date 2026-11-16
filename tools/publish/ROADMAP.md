@@ -20,21 +20,20 @@ compared with Mineclonia:
   can be missed. Caves and overhangs lower than the body count as walls. As on Mineclonia,
   the stuck detection fires during a detour of more than 3 s that does not bring the kaiju
   closer to its target, and he then bulldozes straight at it for 6 s.
-- **Simpler walking physics** (gravity, fixed walking speed, braking in water, pushing out
-  of other mobs). Punches cause no knockback.
-- **No environmental damage except burning:** lava, fire nodes, suffocation, drowning and
-  fall damage don't hurt the kaiju.
-- **No alerts:** Gojira's rule for mobs alerting others of their kind never fires.
+- **Simpler walking physics** (fixed walking speed, braking in water, pushing out of other
+  mobs; ice, cobwebs and water currents don't slow or move the kaiju).
+- **Environmental damage** is Mineclonia's (lava, fire, magma, suffocation), except that
+  rain doesn't keep a kaiju from catching fire and powder snow doesn't freeze it.
 - **Griefing** follows VoxeLibre's `mobs_griefing` setting for all kaiju (Mineclonia: a
   gamerule per mob); the random block drops follow `mcl_doTileDrops`.
-- **Sounds:** no ghast hurt sound, Ghidorah uses the enderman's.
-- Ghidorah's side heads beam on their own less often.
+- **Sounds:** no ghast hurt sound, Ghidorah uses the parrot's.
+- **Armour** rounds each hit to whole HP: one of Ghidorah's heads does nothing to a
+  player in iron armour, two do nothing through diamond; all three always hurt.
 
 ## Gojira
 
-- **Dead zone:** between 7 nodes (bite reach) and 9 (shortest breath) he can neither bite
-  nor breathe and walks closer. A target high above him (a flyer more than 32 nodes away,
-  or above his head out of bite reach) is out of reach of both.
+- A flyer more than 48 nodes away above him is out of reach of his bite and his breath:
+  he walks below it and waits.
 - The server doesn't know his animated pose: flames start at a fixed mouth position, the
   hit boxes don't follow the animation, and his head and tail are not pointable.
 - Mob projectiles and Ghidorah's beams ignore his hit boxes and must pass within 5 nodes
@@ -51,26 +50,36 @@ compared with Mineclonia:
 - **Altitude cap:** she flies at most 60 nodes above the ground under her target. A
   Ghidorah flying more than about 53 nodes up is out of her gust, above 60 out of her
   powder. Over drops deeper than 64 nodes the cap misjudges the ground.
-- **Ceilings are not handled.** Under a roof (caves, the Nether) her ground check hits the
-  roof and she climbs into it. Keep her out of caves and the Nether.
-- Terrain clearance looks only under her centre: her 26-node wings can clip a tower beside
-  her path, and a 1-2 node spike can be missed.
+- Terrain clearance looks only under her centre: her 26-node wings can clip a tower or a
+  cave wall beside her path, and under the open sky a 1-2 node spike can be missed.
+- Under a roof (caves, the Nether) she stays below it, but looks for no way around rock:
+  she flies as far as there is room and holds there, so a target behind it stays out of
+  reach.
 - She never lands. Death drops above 105 nodes vanish.
 - Poison does nothing to undead and spiders.
 
 ## King Ghidorah
 
-- **Side-head reach:** the side heads only aim within a 60° cone and 40 nodes, only at
-  players and kaiju, and only at an enemy other than the main target. With a single enemy
-  in melee no head beams; a side volley can fire nothing when the target leaves the cone.
-- **Ceilings for flyers:** flying he passes through terrain and can take off through a cave
-  roof; he lands straight down, also on water or a roof, and without smashing can land
-  inside a tree. No smashing in the air.
+- **Side-head reach:** the side heads only aim within a 60° cone and 40 nodes, and on
+  their own only at players and kaiju other than the main target. At the enemy he is
+  biting they fire a weaker volley every 12 s, and only if the beams would hit: a kaiju
+  yes, a player right below the heads no. A side volley can fire nothing when its target
+  leaves the cone.
+- **Smashing in the air** leaves natural terrain alone, and a block a player placed is
+  not told apart from the same block in the ground: he flies over a hut of dirt, stone or
+  plain sandstone instead of through it. A tower he flies through loses the slice his
+  body passes; what is above it stays in the air. His wander height still counts tree
+  tops and roofs as ground.
+- A smash pass in the air covers a larger box than on foot (2-5 ms; a whole tree canopy
+  going at once can take 0.2 s on Mineclonia).
+- Under a roof lower than 21 nodes he stays on foot. A flight that a wall or a low roof
+  blocks ends in a landing, and he walks for 20 s before he tries again; he looks for no
+  way around. If he finds no level, dry ground to land on (9 spots are tried), he comes
+  down where he is.
 - His altitude when chasing a flyer is capped at 40 nodes above the ground.
 - Head positions come from fixed poses: beams and hit boxes can be a node off the drawn
   heads. A hit on a severed head's stump damages the body.
-- A beam hits the first enemy on its line, which may not be his target. Beam damage is
-  high against unarmoured players.
+- A beam stops at the first player or kaiju on its line, which may not be his target.
 - Network cost: bone overrides and four hit-box objects per Ghidorah.
 
 ## Cthulhu

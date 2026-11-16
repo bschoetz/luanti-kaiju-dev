@@ -40,8 +40,8 @@ Mineclonia framework references below point to
 | Armor | `armor = 40` | Becomes the armor group `fleshy = 40` (`api.lua:436-444`). Punches deal 40 % (see note). |
 | Knockback | none | `kaiju_core.no_knockback(gojira)` sets `knockback_resistance = 1.0`, `knock_back = false` and a no-op `projectile_knockback`, so punches and projectiles neither push him nor stop him (§7.9). |
 | Melee damage | 18 (`damage`), every 1.5 s (`melee_interval`) | Bite with `fleshy = 18`, plus `_attack_knockback = 3` extra knockback on the victim. |
-| Melee reach | 7 nodes | Measured from his position (feet centre) to the target's position, in 3D (`combat.lua:934`). |
-| Fire breath | 2 damage per flame plus 6 s of burning | About 18 flames per breath. Range 9-32 nodes, cooldown 7 s. Breathes downwards (`breath`) or, at targets more than 15° above his mouth such as a flying Mothra, upwards (`breath_up`). |
+| Melee reach | 7 nodes | Measured in 3D to the target's position from the nearest point of his body's axis, feet to head (`_bite_height = 14.5`, `kaiju_core.bite_dist`; mcl_mobs itself measures from the feet, `combat.lua:934`). He bites a target at chest or head height that he stands below. |
+| Fire breath | 2 damage per flame plus 6 s of burning | About 18 flames per breath. From where his bite ends (more than 7 nodes from his body's axis) up to 32 nodes, upwards up to 48; cooldown 7 s. Breathes downwards (`breath`) or, at targets more than 15° above his mouth such as a flying Mothra, upwards (`breath_up`). |
 | Walk speed | `movement_speed = 7.5`; pacing ×0.5 | Measured: 6.15 nodes/s in pursuit (`gojira_anim`). A sprinting player does 5.6. |
 | Swim speed | `water_velocity = 3.0` | Only used while deeper than 10 nodes (§3.7). |
 | Step height | 1.1 nodes | He walks up single blocks. |
@@ -197,7 +197,6 @@ are still asked every step, so they can take over.
 | 3 | `kaiju_core.cthulhu_rule()`, i.e. `build_nearest_target_rule("mob", {"cthulhu:cthulhu"}, nil, function() return 32 end, nil)`, shared with Ghidorah | The nearest Cthulhu within **32 nodes** with line of sight, and not while Cthulhu is fully under water without a target (his `valid_enemy`). The range must be a function: a number is silently ignored. | Within 32 nodes; lost after 3 s out of sight. See [`../cthulhu/README.md`](../cthulhu/README.md) §8. |
 | 4 | `build_nearest_target_rule("player", nil, nil, nil, true)` | The nearest player within `view_range` (58) **with line of sight**, re-checked every 0.5 s (`check_timer("seek_target")`). Excludes creative players, peaceful difficulty and dead players. | `esp = true`: `persistence = nil`, so **no line-of-sight check while keeping** him. Kept while within 64 nodes and attackable. |
 | 5 | `build_nearest_target_rule("mobs_mc:iron_golem", {"mobs_mc:iron_golem"})` | The nearest iron golem within 58 nodes with line of sight. | Lost after 3 s out of sight (`SIGHT_PERSISTENCE`). |
-| 6 | `build_alert_receiver_rule()` | A target pushed by another mob's `broadcast_attack`. No current mob alerts Gojira, so this is a hook for future kaiju (§8). | 72 nodes for 20 s, then 64 nodes. |
 
 Line of sight (`mob_class:target_visible`, `movement.lua:5`) is traced through nodes
 from his eye (`head_eye_height`, derived by `register_mob` as 0.75 × 14.5 = 10.875
@@ -229,7 +228,8 @@ if _breath_time:            -- BREATHING (state lasts BREATH_TIME = 2.5 s)
     (the first flame waits BREATH_WINDUP = 0.8 s: _flame_timer starts at 0.8)
     on expiry: cooldown = 7 s; attacking = nil; set_animation("walk")
     return                  -- no pathing, no bite, no stuck detection
-if cooldown == 0 and line_of_sight and 9 <= |attach_pos - target_pos| <= 32:
+if cooldown == 0 and line_of_sight and bite_dist(target) > reach
+        and (dist <= 32 or (dist <= 48 and target_above(self, target_pos))):   -- dist = |attach_pos - target_pos|
     START BREATH: _breath_time = 2.5, _flame_timer = 0.8,
     _punch_animation_timeout = nil, halt_in_tracks(true), cancel_navigation(),
     _breath_up = target_above(self, target_pos)
@@ -241,7 +241,7 @@ return mob_class.attack_melee(...)   -- stock pathing + bite
 Details:
 - `_punch_animation_timeout = nil` is required. While it is above 0, `set_animation` forces `"punch"` (`effects.lua:221-225`), so `"breath"`/`"breath_up"` would never play.
 - `self.attacking = nil` at the end of the breath makes base `attack_melee` re-initialise next step (`combat.lua:907-915`). That resets `_gopath_delay`, `_attack_delay` and `_target_pos`, so he repaths immediately.
-- The breath distance is 3D from `attach_pos` (his feet). Between 7 (`reach`) and 9 (`BREATH_MIN_DIST`) nodes he does neither: he walks closer.
+- No gap between bite and breath: he breathes at whatever is in sight and further than `reach` (7) from his body's axis (`kaiju_core.bite_dist`, the distance `gojira:pre_melee_attack` passes to the bite check), and bites what is closer. Until this change the breath started at 9 nodes from his feet and the bite was measured from his feet: between 7 and 9 nodes he did neither, and a target hovering at chest height above him was never bitten (`gojira_reach`). The maximum is 3D from `attach_pos` (his feet): `BREATH_MAX_DIST` 32, or `BREATH_UP_MAX_DIST` 48 for a target he breathes upwards at (`target_above`, only evaluated when a breath is due). A flyer further than 48 nodes up is out of reach of both: he walks below it and waits.
 - The breath does not stop when the target moves out of range or sight. Once started, it runs the full 2.5 s while he turns towards the target.
 - **Flame count:** at 20 steps/s, the first flame comes at 0.8 s, then one every 0.1 s (2 steps) until 2.5 s. That makes about 18 flames, each with 2 damage and 6 s of burning.
 
@@ -258,7 +258,7 @@ return math.atan2(dy, flat) > BREATH_UP_ANGLE              -- 15°
 
 - If the elevation of the target's centre, seen from the normal mouth (10.4 nodes up), is above 15°, he plays `breath_up` and flames start at the up-pose mouth (`MOUTH_UP_FORWARD`/`MOUTH_UP_HEIGHT`, 2.53 / 15.76 nodes). Otherwise he plays `breath` from the normal mouth (6.32 / 10.40 nodes).
 - Typical cases:
-  - A ground target at 9-32 nodes is below the mouth (dy < 0), so he uses `breath`.
+  - A ground target is below the mouth (dy < 0), so he uses `breath`.
   - Mothra at about 25 nodes altitude uses `breath_up` (verified in `kaiju_fight`, §6).
   - A player on a pillar higher than about 10.4 + 0.27·distance nodes also uses `breath_up`.
 - `mouth_pos(self, up)` takes the flag. `shoot_flame` and `breath_particles` pass `self._breath_up`.
@@ -275,7 +275,7 @@ why the model's bite snap is early (frame 126, §5.4). `_punch_animation_timeout
 #### Fire breath projectile (`gojira:flame`, lines 34-58)
 
 - Registered through `mcl_mobs.register_arrow`, so the generic arrow `on_step` (`init.lua:529-647`) applies.
-- **`_lifetime = 80` is counted in server steps**: `self.timer = self.timer + 1` once per `on_step`, and the flame is removed when `timer > _lifetime`. At 20 steps/s that is 4 s × 22 nodes/s = 88 nodes, far beyond `BREATH_MAX_DIST`. On a lagging server it lasts longer in seconds. The mcl_mobs default is 1500 steps.
+- **`_lifetime = 80` is counted in server steps**: `self.timer = self.timer + 1` once per `on_step`, and the flame is removed when `timer > _lifetime`. At 20 steps/s that is 4 s × 22 nodes/s = 88 nodes. But in singleplayer a server step is as short as a frame: in the test client (about 0.024 s per step) the flames ended after 42 nodes, short of `BREATH_UP_MAX_DIST`. So on Mineclonia `shoot_flame` raises each flame's `_lifetime` to at least `FLAME_TIME` (3 s, 66 nodes) worth of steps of the current length (`math.ceil(FLAME_TIME / dtime)`); on a server with long steps the 80 stay (longer in seconds). On VoxeLibre the layer turns the 80 into 4 s. The mcl_mobs default is 1500 steps.
 - `velocity = 22` nodes/s. `shoot_flame` sets the velocity itself, aiming from `mouth_pos` at the target position plus a random offset of ±1 node in x and z and +0.8 to +1.8 in y (`aim`), so the flame aims at the body, not the feet.
 - `ent.switch = 1` is required. A newly added arrow has `switch = 0` and removes itself in its first step. `owner_id = tostring(self.object)` stops the flames from hitting Gojira himself (`hit_mob` checks `owner_id`). `_shooter = self.object` makes `get_arrow_damage_func(2, "fireball")` report Gojira as the damage source. This is what triggers the victim's retaliation rule (for example Mothra's).
 - `hit_player` and `hit_mob` both call `burn`: 2 damage of type `fireball` through `mcl_util.deal_damage`, then `mcl_burning.set_on_fire(obj, 6)`. The flames hit **every** mob except Gojira, including villagers, golems and Mothra.
@@ -296,6 +296,7 @@ clears the way. Gojira-specific behaviour:
 
 - `update_bulldoze` is not called during the fire breath, so the bulldoze timer **pauses** while he breathes. `gojira_water` shows a bulldoze lasting about 8.5 s = 6 + 2.5.
 - "Close enough" uses his `reach + 1` = 8 nodes.
+- **He stands through his bite.** After the base `attack_melee`, while `_punch_animation_timeout` is above 0 (the 0.8 s `punch` clip), `gojira:attack_melee` cancels navigation and halts him, and `gojira:gopath` plans no path; `_target_pos` and `_gopath_delay` are reset so that the first step after the clip plans one at once. Before, he walked on while the clip played and slid about 4 nodes per bite of a player he was chasing (`gojira_bite`: 3.6-4.2 nodes per bite, now 0.4-0.6). Ghidorah and Cthulhu still walk during their bite clips.
 - **Melee standoff.** The same two calls (`update_bulldoze`, `gopath`) stop him when his body is 2 nodes from his target's, instead of walking to its feet as stock melee does: 4.7 nodes from a player, 6.5 (his reach − 0.5) from a Ghidorah, measured between the centres; he needs about a node to stop. Only for targets at body height, so he still walks under a flying Mothra. And only while his bite reaches (3D distance ≤ `reach`): below a target that hovers at chest height, such as a swimmer over deep water or a player on a low roof, he walks on until it does (`gojira_overhead`); he used to stand there, out of bite range and too close for the fire breath. Before this he and Ghidorah stood inside each other for a whole fight; `kaiju_clinch` now shows 5.5-6.4 nodes between them ([`kaiju_core/README.md`](../kaiju_core/README.md) §3.3).
 - `attack_end` (lines 209-213) clears `_breath_time`, then calls `kaiju_core.end_bulldoze` (drops a running bulldoze and its straight-line `stupid_target`, resets stuck detection), then the base `attack_end` (which releases the wielded item). Verified by `gojira_punch`: one second after the target is lost, `_bulldoze_time=nil stupid_target=nil`.
 
@@ -435,10 +436,12 @@ seconds (s), server steps (st, 20/s).
 | `BREATH_TIME` | 2.5 | s | breath state length | both breath anims: (200−150)/20 and (300−250)/20 |
 | `BREATH_WINDUP` | 0.8 | s | delay to first flame | thrust frames 166 and 266: (166−150)/20 = (266−250)/20 |
 | `BREATH_COOLDOWN` | 7.0 | s | between breaths | – |
-| `BREATH_MIN_DIST` / `MAX_DIST` | 9 / 32 | n (3D, feet → target) | breath window | `reach` (keep MIN > reach); flame `_lifetime`·velocity |
+| `BREATH_MAX_DIST` / `BREATH_UP_MAX_DIST` | 32 / 48 | n (3D, feet → target) | longest breath, level or downwards / upwards; the shortest is the bite's reach | `FLAME_TIME`·velocity |
+| `_bite_height` | 14.5 | n | the bite and the breath's lower limit are measured from his axis up to here | collision box height |
+| `FLAME_TIME` | 3 | s | a flame flies at least this long (Mineclonia: `_lifetime` in steps is raised to it) | `BREATH_UP_MAX_DIST` / velocity |
 | `FLAME_INTERVAL` | 0.1 | s | flame + particle spawn rate | particle `time = 2·interval` |
 | flame `velocity` | 22 | n/s | – | `_lifetime` |
-| flame `_lifetime` | 80 | **st** | 4 s at 20 st/s, 88 n range | `BREATH_MAX_DIST` |
+| flame `_lifetime` | 80 | **st** | 4 s at 20 st/s; at least `FLAME_TIME` per flame | `FLAME_TIME` |
 | flame damage / burn | 2 / 6 | HP / s | per flame | – |
 | `_smash.lookahead` | 3 | n | smash box stretch in facing dir; 6.1 n/s × 0.25 s ≈ 1.5 n per tick | `movement_speed`; `kaiju_core` `SMASH_INTERVAL` (speed × interval < lookahead) |
 | `TAIL` | 8 rows | u | tail sweep geometry | `TAIL_PTS`, `TAIL_W`, tail plate heights in `gojira_model.py:60-63,182` |
@@ -657,6 +660,7 @@ itself is documented in [`tests/README.md`](../../tests/README.md).
 | `gojira_arrows` | 13 s | Creative player 40 n in front of a Gojira. Three real arrows (`mcl_bows.shoot_arrow`, power 1, damage 10): a control at the chest with the hit boxes removed, then one at the chest box and one at the head box. | `control/chest/head: arrow at <pos> (<n> above his feet) -> hp a -> b` | Control: HP unchanged (the arrow flies through him). Chest and head: HP drops (500 → 473 → 447). |
 | `kaiju_truce` | 42 s | Creative player on a pillar. A Ghidorah, two Gojiras and a Mothra fight for 10 s, then he is killed. `kaiju_core.truce.distance` is 40 instead of 150, so nobody leaves the active blocks. | per second: every kaiju's `hp= target= pos= retreat=` and the `separation` between the Gojiras' centroid and Mothra; then `<name> moved N along its direction`, `separation a -> b`, `RESULT …` | `RESULT ok`: nobody had a target while retreating, each moved more than 32 nodes along its direction (the Gojiras one way, Mothra the other), and the separation grew by at least 68. A third Gojira, who joins late and is still on a pathfinder path to Ghidorah at the kill, never comes 3 nodes closer to the corpse. |
 | `kaiju_truce_end` | 16 s | Creative player on a pillar, `kaiju_smash_blocks` off. Two Gojiras and a Mothra are sent on a retreat directly (`start_truce`). Mothra is punched by a Gojira, Gojira 1 by the player, Gojira 2 walks into a stone wall, and a Ghidorah spawns next to Mothra. | per second: positions and `retreat=`; `after the punches: …`, `gojira2: retreat ended after N s at x=…`, `2 s after ghidorah spawned: …`, `RESULT …` | `RESULT ok`: the partner's punch does not end Mothra's retreat, the player's punch ends Gojira 1's, Gojira 2's ends about 3 s after he reaches the wall, and Mothra's ends with `target=ghidorah`. |
+| `gojira_reach` | 75 s | Four phases with a fresh Gojira and a pinned survival player: inside an obsidian ring that stops him 7.9 nodes away; 8 above the ground with the breath off; 26.5 above the ground; 40 above the ground. | per breath: `breath at dist … flat … up=`; `VALUES`, `RESULT …` | `RESULT ok`: he breathes at 7.9 nodes (`ring_first_dist` 7-9), bites the target at chest height, breathes upwards at 26.5 and at 40 (from 48 away), sets the player on fire in "ring" and "high", and keeps 500 HP. Before the change "ring", "chest" and "high" failed. |
 | `gojira_overhead` | 20 s | Survival player hovering 5.8 nodes above Gojira's feet (gravity 0, HP refilled); fire breath disabled. | per second: `flat=` and `dist=` (3D) to the player, `anim=`, `bites=`; `RESULT …` | `RESULT ok`: he bites. Without the 3D check in the standoff he stopped at `flat=4.4 dist=7.3` (reach 7) with `bites=0`. |
 | `kaiju_clinch` | 52 s | Creative player on a pillar. Gojira and Ghidorah 30 n apart on flat ground fight for 45 s. At 25 s Gojira is put right inside Ghidorah. | per second: `dist=` (between their centres), HP, animation and how far each turned; then `samples= … min dist= … closer than 4.5: N`, `apart again N s after being put inside each other`, `RESULT …` | `RESULT ok`: no ground sample closer than 4.5 n (their collision boxes touch at 5.0) outside the 3 s after the forced overlap, they came apart again within those 3 s, and both still lose HP in the last 15 s. |
 | `kaiju_dig_callbacks` | 5 s | A beehive, two bee nests and a chest with 3 diamonds right in front of a Gojira; one `kaiju_core.smash(e, {lookahead = 4})` pass is called directly. | `gojira at …`, `after smash: <the four node names> \| items: …` | Four times `air`, the diamonds in `items` and no crash = the `pcall` around `dig_node` works (§7.4). |
@@ -691,7 +695,7 @@ Results from runs on this checkout (2026-11-15):
 Status: **[code]** = verified by reading the code; **[test]** = observed in a test run; **[unverified]** = plausible but not checked.
 
 1. **Mineclonia's `mcl_mobs/API.md` is outdated** [code]. It documents `walk_velocity`, `run_velocity` and the `dogshoot` attack type, none of which exist in the code. Use `movement_speed` with the `*_bonus` factors, `_targeting_rules` and `ai_functions` instead. Trust the Lua.
-2. **Projectile `_lifetime` is counted in server steps, not seconds** [code]. `init.lua:532-536` of mcl_mobs increments `timer` by 1 per `on_step`. Mineclonia runs at 20 steps/s (`dedicated_server_step = 0.05`), so 80 steps is 4 s, and longer under lag.
+2. **Projectile `_lifetime` is counted in server steps, not seconds** [code]. `init.lua:532-536` of mcl_mobs increments `timer` by 1 per `on_step`. A dedicated server runs at about 20 steps/s, so 80 steps is 4 s, and longer under lag; a singleplayer server steps once per frame, where 80 steps were under 2 s. `shoot_flame` therefore sets a minimum per flame (§3.4).
 3. **Arrow hit detection has gaps** [code; impact unverified]. Each step raycasts only `velocity × 0.04 s` ahead while the flame moves `velocity × 0.05 s` (1.1 nodes), and `hit_node` checks only the node at the current position. Thin targets or wall corners can be skipped.
 4. **Chests drop their contents only through `dig_node`/`after_dig_node`** [code]. `kaiju_core` digs containers, doors and beds with `dig_node` for that reason; see [`kaiju_core/README.md`](../kaiju_core/README.md) §6.2. The call has no digger, and some dig callbacks assume a player (`mcl_beehives` indexes the digger's inventory) and raise an error. `core.dig_node` is therefore wrapped in `pcall`: the error is logged once per node name as a warning (`[kaiju_core] dig callback of <node> failed: …`) instead of crashing the server, and the node counts as smashed if it is gone afterwards.
 5. **`mcl_mobs:set_animation` only plays names present in the `animation` table** [code, `effects.lua:227-232`]. Both `<name>_start` and `<name>_end` must exist, otherwise the call is silently ignored. `breath_up` works only because `breath_up_start`/`_end` are in the table. While `self.attack` is set and `_punch_animation_timeout > 0`, any animation is forced to `"punch"`. Non-walk clips play at a fixed `<name>_speed`, while walk scales with velocity.
@@ -731,7 +735,7 @@ mothra._targeting_rules = {
 ```
 
 - Mothra targets Gojira on sight unless a Ghidorah is in sight (view range 64, line of sight required, lost after 3 s out of sight). Her gust and powder damage goes through `mcl_util.deal_damage` with `source = self.object`. That bypasses Gojira's armor and sets his `_last_attacker`, so **his retaliation rule (#2) switches him to her**, even away from a player. A Ghidorah in his sight (#1) still outranks her.
-- She circles about 25 nodes up, more than 15° above his mouth, so his fire breath at her is `breath_up` (§3.4). The 9-32 node breath window is measured in 3D from his feet, so she must stay within 32 nodes for him to breathe at her at all. His bite (reach 7) can't touch her at that altitude.
+- She circles about 25 nodes up, more than 15° above his mouth, so his fire breath at her is `breath_up` (§3.4). The breath's range is measured in 3D from his feet, upwards 48 nodes (`BREATH_UP_MAX_DIST`), so she must stay within 48 nodes for him to breathe at her at all. His bite (reach 7) can't touch her at that altitude.
 - Gojira's flames hit her through `hit_mob` and credit Gojira as the source. She retaliates (rule 3) but already prefers him (rule 2).
 - She is `type = "animal"`, so his iron-golem and player rules never pick her. He fights her only after she attacks him.
 - Balance per the last commit: 1 v 1 is roughly even, two Mothras win (`kaiju_fight`).
@@ -755,15 +759,15 @@ King Ghidorah (`ghidorah:ghidorah`, `type = "monster"`, 600 HP) is documented in
   to 40) two Gojiras each moved 37 nodes along the common direction with no target.
 
 - Gojira's rule 1 (`init.lua:290`) targets him on sight, ahead of retaliation, and keeps him without line of sight. Mothra's rule 1 does the same (with a 3 s sight limit), so the two team up against him. Gojira's mod only refers to him by the string `"ghidorah:ghidorah"`; without the ghidorah mod the rule never matches.
-- Gojira fights him like any target: bite within reach 7, fire breath at 9-32 nodes, `breath_up` when Ghidorah flies more than 15° above his mouth (§3.4).
-- Ghidorah's retaliation rule does not alert others, so Gojira's `build_alert_receiver_rule()` (#5) stays unused.
+- Gojira fights him like any target: bite within reach 7 of his body's axis, fire breath beyond that up to 32 nodes (48 upwards), `breath_up` when Ghidorah flies more than 15° above his mouth (§3.4).
+- No kaiju alerts others, and Mineclonia's mobs alert only their own kind: Gojira has no alert receiver rule (it never fired and was removed).
 
 Patterns to reuse for a further kaiju:
 - **Targeting:** add a rule to `gojira._targeting_rules` (`init.lua:288-296`) at the priority you want, as the Ghidorah rule does:
   ```lua
   mcl_mobs.build_nearest_target_rule("mob", {"ghidorah:ghidorah"}, nil, nil, true), -- esp: keep him without line of sight
   ```
-  Add the matching rule to Mothra's list. If a kaiju should rally others, use `broadcast_attack` from its retaliation rule (`build_retaliation_target_rule(ignore, true, {"gojira:gojira"})`). Gojira's `build_alert_receiver_rule()` (#5) will then accept the alert.
+  Add the matching rule to Mothra's list. If a kaiju should rally others, use `broadcast_attack` from its retaliation rule (`build_retaliation_target_rule(ignore, true, {"gojira:gojira"})`). Gojira then needs `mcl_mobs.build_alert_receiver_rule()` in his list to accept the alert (Mineclonia only: the VoxeLibre layer has none).
 - **Fire or lightning breath:** copy the `attack_melee` state machine. Use one `mouth_pos` per head, with the mouth constants printed by its model script at the pose frame. For aerial targets, reuse the `target_above`/`breath_up` split: one pose per direction, chosen once at breath start. Keep `_lifetime` in steps. Set `switch = 1`, `owner_id` and `_shooter`.
 - **Model:** use the same conventions (fps 1, 10 u = 1 node, rigid boxes, one action, frame ranges) and print every number Lua needs from the script, as `gojira_model.py` does. Three necks means three `neck*/head*/jaw*` chains under `spine2`.
 - **Smashing, wading, bulldozing, knockback:** use `kaiju_core` as Gojira does (`_smash` config, `smash_step` in `ai_step`, `check_standin` with its own swim depth, the three bulldozer calls, `no_knockback`). How to combine them with flight is in [`kaiju_core/README.md`](../kaiju_core/README.md) §5.3. The library sweeps the tail straight behind the mob; a fifth value per segment (a side offset) sweeps it on both sides of that line, which is how Ghidorah's two tails are done (§3.6). A tail at a yaw offset still needs a change in `kaiju_core`'s `sweep_tail`.

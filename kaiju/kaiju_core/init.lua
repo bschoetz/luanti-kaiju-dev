@@ -36,6 +36,20 @@ function kaiju_core.flat_dist(a, b)
 	return math.sqrt((a.x - b.x) ^ 2 + (a.z - b.z) ^ 2)
 end
 
+-- Distance from t to the vertical line from p up to p + h: to a body's axis, not its feet.
+function kaiju_core.axis_dist(p, t, h)
+	local dy = t.y - p.y
+	dy = dy - math.max(0, math.min(h, dy))
+	return math.sqrt((t.x - p.x) ^ 2 + (t.z - p.z) ^ 2 + dy * dy)
+end
+
+-- The distance a mob at p bites over (compared with its reach): to t from the nearest point
+-- of its body's axis up to self._bite_height above its feet (default 0: from its feet, as
+-- mcl_mobs measures). A mob with _bite_height passes it to pre_melee_attack as well.
+function kaiju_core.bite_dist(self, p, t)
+	return kaiju_core.axis_dist(p, t, self._bite_height or 0)
+end
+
 local KAIJU = {["gojira:gojira"] = true, ["mothra:mothra"] = true, ["ghidorah:ghidorah"] = true, ["cthulhu:cthulhu"] = true}
 
 -- Is this luaentity (or nil) one of the modpack's kaiju?
@@ -141,6 +155,36 @@ function kaiju_core.is_terrain(name)
 	return false
 end
 
+-- Natural nodes, which a flying kaiju leaves standing whatever their height: terrain, and
+-- what the mapgen builds the world from: the registered biomes' surface, filler, stone,
+-- river bed, dust and ice, and the ores (VoxeLibre; Mineclonia's own level generator
+-- registers none of them with the engine), plus by name the bulk nodes that are in no
+-- terrain group. Trees and buildings are none. (Blocks a player placed of the same kind
+-- count as natural too: a sandstone or dirt hut survives.)
+local NATURAL = {}
+core.register_on_mods_loaded(function()
+	local function add(n)
+		for _, name in ipairs(type(n) == "table" and n or {n}) do NATURAL[name] = true end
+	end
+	for _, b in pairs(core.registered_biomes) do
+		for _, k in ipairs({"node_top", "node_filler", "node_stone", "node_riverbed", "node_dust", "node_water_top"}) do
+			if b[k] then add(b[k]) end
+		end
+	end
+	for _, o in pairs(core.registered_ores) do
+		if o.ore then add(o.ore) end
+	end
+	add({"mcl_core:sandstone", "mcl_core:redsandstone", "mcl_core:snowblock", "mcl_core:ice", "mcl_core:packed_ice",
+		"mcl_core:clay", "mcl_amethyst:calcite", "mcl_dripstone:dripstone_block",
+		"mcl_nether:netherrack", "mcl_nether:soul_sand", "mcl_nether:magma", "mcl_nether:glowstone",
+		"mcl_blackstone:soul_soil", "mcl_blackstone:basalt", "mcl_blackstone:blackstone",
+		"mcl_crimson:crimson_nylium", "mcl_crimson:warped_nylium", "mcl_end:end_stone"})
+end)
+
+function kaiju_core.is_natural(name)
+	return NATURAL[name] == true or kaiju_core.is_terrain(name)
+end
+
 ------------------------------------------------------------------------
 -- Smashing through the world (respects mobs_griefing and protection)
 ------------------------------------------------------------------------
@@ -160,12 +204,17 @@ end
 
 local warned_dig = {} -- node names whose dig callback failed (logged once each)
 
--- floor_y: the layer it stands on (nil while swimming); only containers, beds and doors in
--- it are dug.
+-- floor_y: the layer it stands on (nil while swimming or flying); only containers, beds and
+-- doors in it are dug. Terrain stays up to keep_terrain_to; nil: natural nodes stay everywhere.
 local function smash_node(p, floor_y, keep_terrain_to, removed, column_tops)
 	local node = core.get_node(p)
-	if kaiju_core.is_immune(node.name) or (p.y <= keep_terrain_to and kaiju_core.is_terrain(node.name))
-			or core.is_protected(p, "") then
+	local keep
+	if keep_terrain_to then
+		keep = p.y <= keep_terrain_to and kaiju_core.is_terrain(node.name)
+	else
+		keep = kaiju_core.is_natural(node.name)
+	end
+	if kaiju_core.is_immune(node.name) or keep or core.is_protected(p, "") then
 		return
 	end
 	local def = core.registered_nodes[node.name]
@@ -251,7 +300,8 @@ local function sweep_tail(self, tail, pos, floor_y, keep_terrain_to, removed, co
 	end
 end
 
--- One smash pass. cfg = self._smash = {lookahead = nodes ahead, tail = see sweep_tail or nil}
+-- One smash pass. cfg = {lookahead = nodes ahead, tail = see sweep_tail or nil,
+-- keep = "natural" for a flyer: no floor layer, and every natural node stays (is_natural)}
 function kaiju_core.smash(self, cfg)
 	local pos = self.object:get_pos()
 	local cb = self.collisionbox
@@ -265,6 +315,7 @@ function kaiju_core.smash(self, cfg)
 	local swimming = self.floats == 1
 	local floor_y = not swimming and p1.y or nil
 	local keep_terrain_to = swimming and p1.y or p1.y + 1
+	if cfg.keep == "natural" then floor_y, keep_terrain_to = nil, nil end
 	-- +1 above the head: headroom for stepping up onto the next terrain layer
 	local p2 = vector.round(vector.offset(pos, cb[4] + math.max(dir.x * la, 0), cb[5] + 1, cb[6] + math.max(dir.z * la, 0)))
 	local removed, column_tops = {}, {}
@@ -310,7 +361,8 @@ end
 
 -- Call from ai_step: smashes every SMASH_INTERVAL (if mobs_griefing and the
 -- kaiju_smash_blocks setting allow it for `mob_name`), throttled while the mob idles without a target.
-function kaiju_core.smash_step(self, dtime, mob_name)
+-- cfg: see smash; default self._smash.
+function kaiju_core.smash_step(self, dtime, mob_name, cfg)
 	if self.dead or not kaiju_core.griefing_enabled(mob_name, "kaiju_smash_blocks") then return end
 	self._smash_timer = (self._smash_timer or 0) + dtime
 	if self._smash_timer < SMASH_INTERVAL then return end
@@ -324,7 +376,7 @@ function kaiju_core.smash_step(self, dtime, mob_name)
 	self._smash_yaw = yaw
 	self._smash_idle = idle and (self._smash_idle or 0) + 1 or 0
 	if self._smash_idle % SMASH_IDLE_TICKS == 0 then
-		kaiju_core.smash(self, self._smash or {})
+		kaiju_core.smash(self, cfg or self._smash or {})
 	end
 end
 
@@ -344,8 +396,9 @@ local STANDOFF = 2.0 -- nodes kept between the two bodies in melee (they need ab
 -- so they ended up standing inside each other. Is the mob as close to its target as the
 -- two collision boxes allow (plus STANDOFF, but never beyond its reach)? Only for a target
 -- at body height: under a flyer or a player on a tower it walks on. And only within reach:
--- the bite is measured in 3D, so a target at chest height can be out of reach at that gap.
--- Then the second return value is true, and gopath walks straight on to get below it.
+-- the bite is measured in 3D from the feet (bite_dist; with _bite_height from the body's
+-- axis), so a target above the feet can be out of reach at that gap. Then the second
+-- return value is true, and gopath walks straight on to get below it.
 
 -- The horizontal gap, centre to centre, a mob keeps to a target with collision box `tcb`.
 function kaiju_core.standoff_gap(self, tcb)
@@ -359,7 +412,7 @@ local function at_standoff(self)
 	local p, cb, tcb = self.object:get_pos(), self.collisionbox, target:get_properties().collisionbox
 	if tp.y - p.y >= cb[5] or p.y - tp.y >= tcb[5] then return false end
 	if kaiju_core.flat_dist(p, tp) >= kaiju_core.standoff_gap(self, tcb) then return false end
-	if vector.distance(p, tp) > self.reach then return false, true end
+	if kaiju_core.bite_dist(self, p, tp) > self.reach then return false, true end
 	return true
 end
 
@@ -498,26 +551,195 @@ function kaiju_core.ground_y(pos)
 	return pos.y - 64
 end
 
+-- ground_y for a flyer that smashes its way (keep_clearance): the first node below pos
+-- that a smash pass in the air leaves standing (immune, natural or protected).
+local function lasting_ground_y(pos)
+	for pointed in core.raycast(vector.offset(pos, 0, 2, 0), vector.offset(pos, 0, -64, 0), false, true) do
+		if pointed.type == "node" then
+			local name = core.get_node(pointed.under).name
+			if kaiju_core.is_immune(name) or kaiju_core.is_natural(name) or core.is_protected(pointed.under, "") then
+				return pointed.above.y - 0.5
+			end
+		end
+	end
+	return pos.y - 64
+end
+
+-- Foliage, which a flyer passes through: leaves, and the caps of the Nether's huge fungi
+-- (walkable like leaves, but in no group of their own).
+local FOLIAGE = {["mcl_nether:nether_wart_block"] = true, ["mcl_crimson:warped_wart_block"] = true, ["mcl_crimson:shroomlight"] = true}
+local function is_foliage(name, def)
+	return FOLIAGE[name] or (def.groups.leaves or 0) > 0
+end
+
+-- A roof over a flyer, or ground to land on: walkable (or unknown), and not foliage.
+local function is_roof(name)
+	local def = core.registered_nodes[name]
+	return not def or (def.walkable and not is_foliage(name, def))
+end
+
+-- The first roof node (is_roof) on the way from a to b: its position, or nil.
+-- (A ray that starts inside a node returns that node first.)
+local function roof_between(a, b)
+	for pointed in core.raycast(a, b, false, false) do
+		if pointed.type == "node" and is_roof(core.get_node(pointed.under).name) then
+			return pointed.under
+		end
+	end
+end
+
+-- Height of the underside of the first roof node within `up` nodes above pos, or nil
+-- under the open sky. (Not from a mob's feet on the ground: that ray starts on the face of
+-- the node below, which may count as the first hit. From a node higher.)
+function kaiju_core.ceiling_y(pos, up)
+	local roof = roof_between(pos, vector.offset(pos, 0, up, 0))
+	return roof and roof.y - 0.5
+end
+
+local CEIL_MARGIN = 2 -- nodes kept between a flyer's head and a roof
+local MIN_ROOM = 2    -- a gap must be this much higher than the body to be flown through
+local WALL_MARGIN = 4 -- nodes that must be free beyond a goal (the mob overshoots a little)
+
+-- For tests: the clearance checks (keep_clearance refreshes), their raycasts and time.
+kaiju_core._flight_stats = {refreshes = 0, rays = 0, max_rays = 0, total_us = 0, max_us = 0}
+
+-- keep_clearance under a roof: the samples of the path from self_pos to goal as columns
+-- between a floor and a roof. Each column is probed at the height the last one had air at
+-- (the cave the flyer is in, not one behind the rock), or else at the path's own height.
+-- Returns the lowest and highest height for the goal, whether the mob's own spot is too
+-- low for it, and if the way is blocked (a sample inside rock, a wall between two samples,
+-- or the gap too low) the x and z of the last sample before that. A wall right behind the
+-- goal blocks it as well. Three rays per sample.
+local function cave_clearance(self_pos, goal, n, up, height, min_clearance)
+	local huge = math.huge
+	local function is_solid(q) return is_roof(core.get_node(q).name) end -- (not inside foliage)
+	local floor, roof, y = -huge, huge, self_pos.y + 1
+	local own_floor, own_roof, cramped, stop_x, stop_z
+	local last, last_q, before = self_pos, nil, self_pos
+	for i = 0, n do
+		local p = vector.add(self_pos, vector.multiply(vector.subtract(goal, self_pos), n > 0 and i / n or 0))
+		local q = vector.new(p.x, y, p.z)
+		if is_solid(q) then q.y = p.y end
+		local blocked = i > 0 and (is_solid(q) or roof_between(last_q, q) ~= nil)
+		if not blocked then
+			local r = kaiju_core.ceiling_y(q, up) or huge
+			local f = kaiju_core.ground_y(vector.offset(q, 0, -2, 0))
+			if i == 0 then
+				own_floor, own_roof = f, r
+				-- its own spot never blocks it: too low, it is left out and the mob moves on
+				cramped = f + height + MIN_ROOM > r
+				if not cramped then floor, roof = f, r end
+			elseif math.max(floor, f) + height + MIN_ROOM > math.min(roof, r) then
+				blocked = true
+			else
+				floor, roof, y = math.max(floor, f), math.min(roof, r), q.y
+			end
+		end
+		if blocked then
+			stop_x, stop_z = last.x, last.z
+			break
+		end
+		before, last, last_q = last, p, q
+	end
+	local d = vector.new(goal.x - self_pos.x, 0, goal.z - self_pos.z)
+	local len = vector.length(d)
+	if not stop_x and len > 0.1 and roof_between(last_q, vector.add(last_q, vector.multiply(d, WALL_MARGIN / len))) then
+		stop_x, stop_z = before.x, before.z
+	end
+	if floor == -huge then
+		-- no room at its own spot and none ahead: hold in the middle of its own gap
+		local mid = (own_floor + own_roof - height) / 2
+		return mid, mid, cramped, stop_x, stop_z
+	end
+	local cap = roof < huge and roof - height - CEIL_MARGIN or nil
+	local lo = floor + min_clearance
+	if cap and lo > cap then
+		-- too low for the full clearance: the middle of what there is
+		lo = math.max(floor + 1, (floor + cap) / 2)
+		cap = lo
+	end
+	return lo, cap, cramped, stop_x, stop_z
+end
+
 -- Keep self._goal at least `min_clearance` above the terrain along the whole path from the
 -- mob to the goal (sampled every CLEARANCE_STEP nodes, checked 4x a second). fly_velocity
 -- climbs on the spot while the mob is below this floor (self._floor), so it never cuts
 -- through a hill or wall between the samples' ends.
-function kaiju_core.keep_clearance(self, self_pos, dtime, min_clearance)
+-- Under a roof (one ray up from the mob, as far as the ground rays start above it) the
+-- goal also stays below self._cap, CEIL_MARGIN under the lowest roof on the path; where
+-- there is too little room for min_clearance the mob flies in the middle of the gap. If
+-- the path is blocked, self._blocked is set and the goal moved to the last sample before
+-- that (self._stop_x/z): the mob flies as far as there is room and holds there.
+-- smashes: the mob breaks what is in its way (smash with keep = "natural"), so under the
+-- open sky only the ground that will last counts: it flies through towers and tree tops.
+function kaiju_core.keep_clearance(self, self_pos, dtime, min_clearance, smashes)
 	local goal = self._goal
 	if not goal then return end
 	self._floor_timer = (self._floor_timer or 0) - dtime
 	if self._floor_timer <= 0 or not self._floor then
 		self._floor_timer = 0.25
+		local t0, rays = core.get_us_time(), 1
 		local from = math.max(self_pos.y, goal.y) + 30
 		local n = math.min(CLEARANCE_SAMPLES, math.ceil(vector.distance(self_pos, goal) / CLEARANCE_STEP))
-		local floor = -math.huge
-		for i = 0, n do
-			local p = vector.add(self_pos, vector.multiply(vector.subtract(goal, self_pos), n > 0 and i / n or 0))
-			floor = math.max(floor, kaiju_core.ground_y(vector.new(p.x, from, p.z)))
+		local up = from + 2 - self_pos.y -- (ground_y starts 2 above the position it is given)
+		if kaiju_core.ceiling_y(vector.offset(self_pos, 0, 1, 0), up - 1) then
+			local lo, cap, cramped, stop_x, stop_z = cave_clearance(self_pos, goal, n, up, self.collisionbox[5], min_clearance)
+			self._floor, self._cap, self._cramped = lo, cap, cramped or nil
+			self._blocked, self._stop_x, self._stop_z = stop_x ~= nil or nil, stop_x, stop_z
+			rays = rays + 3 * n + 3
+		else
+			local floor, ground_y = -math.huge, smashes and lasting_ground_y or kaiju_core.ground_y
+			for i = 0, n do
+				local p = vector.add(self_pos, vector.multiply(vector.subtract(goal, self_pos), n > 0 and i / n or 0))
+				floor = math.max(floor, ground_y(vector.new(p.x, from, p.z)))
+			end
+			self._floor = floor + min_clearance
+			self._cap, self._cramped, self._blocked = nil, nil, nil
+			rays = rays + n + 1
 		end
-		self._floor = floor + min_clearance
+		local s, us = kaiju_core._flight_stats, core.get_us_time() - t0
+		s.refreshes, s.rays, s.max_rays = s.refreshes + 1, s.rays + rays, math.max(s.max_rays, rays)
+		s.total_us, s.max_us = s.total_us + us, math.max(s.max_us, us)
 	end
 	goal.y = math.max(goal.y, self._floor)
+	if self._cap then goal.y = math.min(goal.y, self._cap) end
+	if self._blocked then goal.x, goal.z = self._stop_x, self._stop_z end
+end
+
+-- The height to fly to at p for a flyer now at height self_y: `altitude` above the ground
+-- there, and under a roof (above p at the flyer's height) low enough for a body `height` tall.
+function kaiju_core.cruise_y(p, self_y, altitude, height)
+	local q = vector.new(p.x, self_y, p.z)
+	local roof = not is_roof(core.get_node(q).name) and kaiju_core.ceiling_y(q, 32)
+	if not roof then
+		return kaiju_core.ground_y(vector.new(p.x, self_y + 30, p.z)) + altitude
+	end
+	return math.min(kaiju_core.ground_y(vector.offset(q, 0, -2, 0)) + altitude, roof - height - CEIL_MARGIN)
+end
+
+-- Can a flyer with collision box `cb` land in the column below pos? Five rays down (the
+-- centre and the corners of the box, up to 64 nodes): each must reach walkable ground at
+-- least a node below pos without meeting foliage or a liquid first (plants don't count),
+-- and the five heights must lie within 1.5 nodes. Returns the ground's height, or nil.
+function kaiju_core.landing_ok(pos, cb)
+	local lo, hi = math.huge, -math.huge
+	for _, o in ipairs({{0, 0}, {cb[1], cb[3]}, {cb[1], cb[6]}, {cb[4], cb[3]}, {cb[4], cb[6]}}) do
+		local from, y = vector.offset(pos, o[1], 0, o[2]), nil
+		for pointed in core.raycast(from, vector.offset(from, 0, -64, 0), false, true) do
+			if pointed.type == "node" then
+				local name = core.get_node(pointed.under).name
+				local def = core.registered_nodes[name]
+				if not def or def.liquidtype ~= "none" or is_foliage(name, def) then return nil end
+				if def.walkable then
+					y = pointed.under.y + 0.5
+					break
+				end
+			end
+		end
+		if not y or y > pos.y - 1 then return nil end
+		lo, hi = math.min(lo, y), math.max(hi, y)
+	end
+	return hi - lo <= 1.5 and hi or nil
 end
 
 -- Steer the velocity smoothly towards self._goal at self._goal_speed (or default_speed).
@@ -528,8 +750,9 @@ function kaiju_core.fly_velocity(self, dtime, self_pos, default_speed)
 	local goal = self._goal
 	if goal then
 		local speed = self._goal_speed or default_speed
-		if self._floor and self_pos.y < self._floor - 2 then
+		if self._floor and not self._cramped and self_pos.y < self._floor - 2 then
 			-- higher terrain ahead (or below): climb on the spot first, then cross
+			-- (not from a spot too low for the mob: its own roof is not in _cap then)
 			want = vector.new(0, math.min(speed, (self._floor - self_pos.y) * 2), 0)
 		else
 			local d = vector.subtract(goal, self_pos)
@@ -541,7 +764,10 @@ function kaiju_core.fly_velocity(self, dtime, self_pos, default_speed)
 	end
 	local v = self.object:get_velocity()
 	local k = math.min(1, dtime * 1.5)
-	self.object:set_velocity(vector.add(v, vector.multiply(vector.subtract(want, v), k)))
+	v = vector.add(v, vector.multiply(vector.subtract(want, v), k))
+	-- under a roof the climb ends at the cap, not after the lag has carried it past
+	if self._cap and self_pos.y > self._cap and v.y > 0 then v.y = 0 end
+	self.object:set_velocity(v)
 	return want
 end
 

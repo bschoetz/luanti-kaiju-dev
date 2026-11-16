@@ -43,9 +43,12 @@ local BEAM_TIME = 2.5          -- matches the "beam" animation (50 frames at 20 
 local BEAM_START = 0.5         -- rear-up part of the animation before the beams fire
 local BEAM_TICK = 0.25
 local BEAM_DAMAGE = 3          -- per head and tick
+local BEAM_PLAYER_DAMAGE = 1   -- ... against players (the heads' hits of a tick are dealt as one: beams_step)
 local BEAM_RANGE = 40
 local BEAM_MIN_DIST = 8
 local BEAM_MIN_TIME = 1.5      -- on the ground: the target must have been that far away for this long
+local SIDE_MAIN_INTERVAL = 12  -- seconds between the side heads' volleys at a main target in melee
+local SIDE_MAIN_DAMAGE = 1     -- per head and tick in those (he doesn't bite meanwhile)
 local BLAST_INTERVAL = 1.0     -- per head: a small explosion where a beam hits the ground
 local FLY_SPEED = 9
 local WANDER_SPEED = 5
@@ -60,7 +63,15 @@ local AIRBORNE_TARGET = 6      -- a target this high above its ground counts as 
 local FAR_TARGET = 48          -- fly to targets further than this
 local LAND_DIST = 25           -- land when a ground target is closer than this
 local IDLE_FLIGHT = 15         -- land after flying this long without a target
+local FLY_ROOM = 6             -- free nodes above his head that he needs to take off
+local NO_FLY_TIME = 20         -- seconds on foot after a wall or a low roof ended a flight
+local LAND_RING = 12           -- landing spots are tried this far around the target
+local LAND_TRANSIT = 10        -- seconds to reach a landing spot, then he comes down where he is
 local HEAD_AIM_MAX = math.rad(60)
+
+-- Smashing in the air: his heads are 11 nodes ahead of his feet in the fly pose; no floor
+-- layer and no tail, and natural terrain stays (kaiju_core.smash).
+local FLY_SMASH = {lookahead = 12, keep = "natural"}
 
 local HEADS = {"c", "l", "r"}
 
@@ -204,7 +215,8 @@ local HITBOXES = {{
 	end,
 }}
 for _, h in ipairs(HEADS) do
-	HITBOXES[#HITBOXES + 1] = {name = h, pos = function(self) return head_joint(self, h, HEAD_CENTRE) end}
+	-- (a stump's box is at the joint: the skull it was around is gone)
+	HITBOXES[#HITBOXES + 1] = {name = h, pos = function(self) return head_joint(self, h, head_alive(self, h) and HEAD_CENTRE or 0) end}
 end
 
 ------------------------------------------------------------------------
@@ -219,23 +231,57 @@ local function is_enemy(self, obj)
 	return ent and ent.is_mob and not ent.dead and ent.name ~= "ghidorah:ghidorah"
 end
 
--- The beam leaves the mouth along the direction the head is turned to (aim_head), so a
--- target outside the heads' HEAD_AIM_MAX cone is missed instead of shot through his own body.
-local function beam_tick(self, h, target, do_blast)
+-- Where head h's beam at target starts (the mouth) and its direction. The beam leaves the
+-- mouth along the direction the head is turned to (aim_head), so a target outside the
+-- heads' HEAD_AIM_MAX cone is missed instead of shot through his own body.
+local function beam_ray(self, h, target)
 	local joint = head_joint(self, h)
 	local yaw_off, pitch = aim_angles(self, joint, centre_of(target))
 	local yaw = self.object:get_yaw() + clamp_aim(yaw_off)
 	pitch = clamp_aim(pitch)
 	local dir = vector.new(-math.sin(yaw) * math.cos(pitch), math.sin(pitch), math.cos(yaw) * math.cos(pitch))
-	local from = vector.add(joint, vector.multiply(dir, MOUTH_LEN[h] * UNIT))
+	return vector.add(joint, vector.multiply(dir, MOUTH_LEN[h] * UNIT)), dir
+end
+
+-- Players and kaiju stop a beam; smaller mobs are hurt and let it through.
+local function stops_beam(obj)
+	return obj:is_player() or kc.is_kaiju(obj:get_luaentity())
+end
+
+-- Would head h's beam hit target: is it the first thing on the line that stops a beam?
+-- (A dry run of beam_tick. In melee the side heads can't turn far enough down for a target's
+-- centre, but the clamped beam still enters a kaiju's box; a player's it misses.)
+local function beam_reaches(self, h, target)
+	local from, dir = beam_ray(self, h, target)
+	for pointed in core.raycast(from, vector.add(from, vector.multiply(dir, BEAM_RANGE)), true, false) do
+		if pointed.type == "node" then return false end
+		local obj = pointed.ref
+		if obj == target then return true end
+		if obj ~= self.object and is_enemy(self, obj) and stops_beam(obj) then return false end
+	end
+	return false
+end
+
+-- One tick of head h's beam at target. Enemies on the line take `damage`; a player is
+-- only counted in player_hits (player -> heads that hit it in this tick, see beams_step).
+local function beam_tick(self, h, target, do_blast, damage, player_hits)
+	local from, dir = beam_ray(self, h, target)
 	local to = vector.add(from, vector.multiply(dir, BEAM_RANGE))
 	local hit_pos
 	for pointed in core.raycast(from, to, true, false) do
 		if pointed.type == "object" then
-			if pointed.ref ~= self.object and is_enemy(self, pointed.ref) then
-				mcl_util.deal_damage(pointed.ref, BEAM_DAMAGE, {type = "mob", source = self.object, direct = self.object})
-				hit_pos = pointed.intersection_point or pointed.ref:get_pos()
-				break
+			local obj = pointed.ref
+			if obj ~= self.object and is_enemy(self, obj) then
+				local at, stops = pointed.intersection_point or obj:get_pos(), obj == target or stops_beam(obj)
+				if obj:is_player() then
+					player_hits[obj] = (player_hits[obj] or 0) + 1
+				else
+					mcl_util.deal_damage(obj, damage, {type = "mob", source = self.object, direct = self.object})
+				end
+				if stops then
+					hit_pos = at
+					break
+				end
 			end
 		elseif pointed.type == "node" then
 			hit_pos = pointed.intersection_point or pointed.above
@@ -356,24 +402,37 @@ local function beams_step(self, dtime)
 		self._blast_timer = (self._blast_timer or 0) - BEAM_TICK
 		local blast = self._blast_timer <= 0
 		if blast then self._blast_timer = BLAST_INTERVAL end
+		local player_hits = {}
+		-- a side volley: only the side heads, at their own enemies, or ("main") at the main
+		-- target, and then only while the beam would hit it
+		local main = self._beam_side == "main"
 		for _, h in ipairs(HEADS) do
 			local t = head_target(self, h)
 			if head_alive(self, h) and t and t:is_valid()
-					and not (self._beam_side and (h == "c" or t == self.attack)) then
-				beam_tick(self, h, t, blast)
+					and not (self._beam_side and (h == "c" or (t == self.attack) ~= main))
+					and (not main or beam_reaches(self, h, t)) then
+				beam_tick(self, h, t, blast, main and SIDE_MAIN_DAMAGE or BEAM_DAMAGE, player_hits)
 				self._beam_fired = true
 			end
 		end
+		-- One hit per player and tick for all heads: armour takes a share of every hit, and
+		-- VoxeLibre rounds what is left to whole HP (1 through iron armour: 0).
+		for player, n in pairs(player_hits) do
+			mcl_util.deal_damage(player, n * BEAM_PLAYER_DAMAGE, {type = "mob", source = self.object, direct = self.object})
+		end
 	end
 	if self._beam_time <= 0 then
+		local main = self._beam_side == "main" -- (has its own cooldown: ground_attack)
 		end_beams(self)
 		-- (a side head whose enemy got away before it could fire tries again soon)
-		self._beam_cooldown = self._beam_fired and BEAM_INTERVAL or 2
+		if not main then self._beam_cooldown = self._beam_fired and BEAM_INTERVAL or 2 end
 	end
 end
 
 -- side_only: the main target is too close for beams (he bites it), but a side head has an
 -- enemy of its own: only those heads fire, while the body keeps walking and biting.
+-- side_only = "main": the side heads fire at the main target in melee instead, and he
+-- doesn't bite meanwhile (pre_melee_attack).
 local function start_beams(self, side_only)
 	self._beam_time = BEAM_TIME
 	self._beam_tick = 0
@@ -415,7 +474,7 @@ local ghidorah = {
 	pace_bonus = 0.5,
 	floats = 0,
 	water_velocity = 3.0,
-	damage = 13,               -- his bite is the weaker one (Gojira: 18); his weapon is the beams
+	damage = 10,               -- his bite is the weaker one (Gojira: 18); his weapon is the beams
 	reach = 8,
 	melee_interval = 1.5,
 	attack_type = "null",
@@ -465,6 +524,12 @@ kc.lock_animations(ghidorah)
 -- Walking and flying
 ------------------------------------------------------------------------
 
+-- Clear of the ground on the way to his goal. What he may smash is not ground: he flies
+-- through trees and towers and tears them down (ai_step). With smashing off he flies over.
+local function keep_clearance(self, self_pos, dtime)
+	kc.keep_clearance(self, self_pos, dtime, MIN_CLEARANCE, kc.griefing_enabled("ghidorah:ghidorah", "kaiju_smash_blocks"))
+end
+
 local function take_off(self)
 	self.attacking = nil
 	self._flying = true
@@ -474,7 +539,13 @@ local function take_off(self)
 	self:cancel_navigation()
 	self:halt_in_tracks(true)
 	self.object:set_properties({physical = false})
-	self._goal = vector.offset(self.object:get_pos(), 0, ALTITUDE, 0)
+	self._land_spot, self._land_try, self._land_time = nil, nil, nil
+	self._blocked, self._floor = nil, nil -- (of the last flight)
+	local pos, height = self.object:get_pos(), self.collisionbox[5]
+	local goal = vector.offset(pos, 0, ALTITUDE, 0)
+	local roof = kc.ceiling_y(vector.offset(pos, 0, 1, 0), ALTITUDE + height + 1)
+	if roof then goal.y = math.min(goal.y, roof - height - 2) end
+	self._goal = goal
 	self._goal_speed = FLY_SPEED
 	kc.play(self, "takeoff", TAKEOFF_TIME)
 	self:mob_sound("war_cry")
@@ -488,14 +559,45 @@ local function touch_down(self)
 	end
 	self._flying = nil
 	self._land = nil
+	self._land_spot, self._land_try, self._land_time = nil, nil, nil
 	self._goal = nil
 	self.object:set_velocity(vector.zero())
 	self.object:set_properties({physical = true})
 	kc.play(self, "land", LAND_TIME)
 end
 
+-- Where to land (choose_mode, up to 3 candidates a second): below him, or else the nearest
+-- of 8 spots around the target (LAND_RING away; without a target near him, 10 and 20
+-- nodes around himself) that is level, dry ground and not a tree top (kc.landing_ok). If
+-- none of the 9 is, he comes down where he is, as he always did (touch_down clears the
+-- spot if he may smash). The spot is a plain table: it is saved with him.
+local function find_landing_spot(self, self_pos)
+	local t = self.attack and self.attack:is_valid() and self.attack:get_pos()
+	if t and kc.flat_dist(t, self_pos) > LAND_DIST + 5 then t = nil end
+	local c, spots = t or self_pos, {}
+	for k = 0, 7 do
+		local a, d = k * math.pi / 4, t and LAND_RING or (k % 2 == 0 and 10 or 20)
+		spots[k + 1] = vector.new(c.x + math.cos(a) * d, self_pos.y, c.z + math.sin(a) * d)
+	end
+	table.sort(spots, function(a, b) return kc.flat_dist(a, self_pos) < kc.flat_dist(b, self_pos) end)
+	table.insert(spots, 1, self_pos)
+	local tried = self._land_try or 0
+	for i = tried + 1, math.min(tried + 3, #spots) do
+		local y = kc.landing_ok(spots[i], self.collisionbox)
+		if y then
+			self._land_spot = {x = spots[i].x, y = y, z = spots[i].z}
+			return
+		end
+	end
+	self._land_try = tried + 3
+	if self._land_try >= #spots then
+		self._land_spot = {x = self_pos.x, y = self_pos.y, z = self_pos.z}
+	end
+end
+
 -- Decide (once a second) whether to switch between walking and flying.
 local function choose_mode(self, self_pos, dtime)
+	self._no_fly = math.max((self._no_fly or 0) - dtime, 0)
 	self._mode_timer = (self._mode_timer or 0) - dtime
 	if self._mode_timer > 0 or (self._anim_lock or 0) > 0 or self._beam_time then return end
 	self._mode_timer = 1
@@ -507,13 +609,19 @@ local function choose_mode(self, self_pos, dtime)
 			self._target_airborne = airborne
 			local far = vector.distance(self_pos, tp) > FAR_TARGET
 			local stuck = (self._bulldoze_time or 0) > 0 and (self._stuck_flights or 0) < 3
-			if airborne or far or stuck then
+			-- not under a roof (leaves are none), and not right after one ended a flight
+			if (airborne or far or stuck) and self._no_fly == 0
+					and not kc.ceiling_y(vector.offset(self_pos, 0, 1, 0), self.collisionbox[5] + FLY_ROOM - 1) then
 				if stuck then self._stuck_flights = (self._stuck_flights or 0) + 1 end
 				take_off(self)
 			end
 		end
 	elseif not self._land then
-		if t and t:is_valid() then
+		if self._blocked then
+			-- a wall or a roof too low to fly under is in the way (kc.keep_clearance): on
+			-- foot from here, where he walks, bulldozes and beams
+			self._land, self._no_fly = true, NO_FLY_TIME
+		elseif t and t:is_valid() then
 			self._idle_flight = 0
 			local tp = t:get_pos()
 			local airborne = tp.y - kc.ground_y(tp) > AIRBORNE_TARGET
@@ -525,6 +633,7 @@ local function choose_mode(self, self_pos, dtime)
 			if self._idle_flight >= IDLE_FLIGHT then self._land = true end
 		end
 	end
+	if self._flying and self._land and not self._land_spot then find_landing_spot(self, self_pos) end
 end
 
 function ghidorah:motion_step(dtime, moveresult, self_pos)
@@ -536,13 +645,24 @@ function ghidorah:motion_step(dtime, moveresult, self_pos)
 		return
 	end
 	if self._land then
-		local ground = kc.ground_y(self_pos)
-		self._goal = vector.new(self_pos.x, ground, self_pos.z)
+		local spot = self._land_spot
 		self._goal_speed = FLY_SPEED -- he can't attack while landing: come down fast
-		self._floor = nil
-		if self_pos.y - ground < 1.5 then
-			touch_down(self)
-			return
+		if not spot then
+			self._goal = vector.copy(self_pos) -- (choose_mode is still looking for a spot)
+		elseif kc.flat_dist(self_pos, spot) > 1.5 and (self._land_time or 0) < LAND_TRANSIT then
+			-- over to the spot at his height, clear of the terrain on the way
+			self._land_time = (self._land_time or 0) + dtime
+			self._goal = vector.new(spot.x, math.max(self_pos.y, spot.y + MIN_CLEARANCE), spot.z)
+			keep_clearance(self, self_pos, dtime)
+		else
+			-- straight down (keep_clearance would hold him up)
+			local ground = kc.ground_y(self_pos)
+			self._goal = vector.new(self_pos.x, ground, self_pos.z)
+			self._floor = nil
+			if self_pos.y - ground < 1.5 then
+				touch_down(self)
+				return
+			end
 		end
 	end
 	local want = kc.fly_velocity(self, dtime, self_pos, WANDER_SPEED)
@@ -559,7 +679,7 @@ local function fly_wander(self, self_pos, dtime)
 	if not goal or self._wander_timer <= 0 or vector.distance(self_pos, goal) < 3 then
 		local ang, dist = math.random() * 2 * math.pi, 20 + math.random() * 30
 		local p = vector.offset(self_pos, math.cos(ang) * dist, 0, math.sin(ang) * dist)
-		p.y = kc.ground_y(vector.new(p.x, self_pos.y + 30, p.z)) + ALTITUDE + math.random() * 8
+		p.y = kc.cruise_y(p, self_pos.y, ALTITUDE + math.random() * 8, self.collisionbox[5])
 		self._goal, self._goal_speed = p, WANDER_SPEED
 		self._wander_timer = 8 + math.random() * 6
 	end
@@ -588,6 +708,17 @@ local function ground_attack(self, attach_pos, self_pos, dtime, target_pos, line
 			start_beams(self, true)
 		end
 	end
+	-- A main target in melee and no other enemy for the side heads: every SIDE_MAIN_INTERVAL
+	-- they fire a volley at it, if a beam would hit (looked at once a second).
+	if not self._beam_time and dist < BEAM_MIN_DIST and (self._side_main_cd or 0) <= 0
+			and not (self._head_target_l or self._head_target_r) then
+		self._side_main_cd = 1
+		if (head_alive(self, "l") and beam_reaches(self, "l", self.attack))
+				or (head_alive(self, "r") and beam_reaches(self, "r", self.attack)) then
+			start_beams(self, "main")
+			self._side_main_cd = SIDE_MAIN_INTERVAL
+		end
+	end
 	kc.update_bulldoze(self, dtime, attach_pos, target_pos)
 	return mob_class.attack_melee(self, attach_pos, self_pos, dtime, target_pos, line_of_sight)
 end
@@ -606,7 +737,7 @@ local function air_attack(self, self_pos, dtime, target_pos, line_of_sight)
 	local r = line_of_sight and CIRCLE_RADIUS or 0
 	self._goal = vector.new(target_pos.x + math.cos(self._circle) * r, top, target_pos.z + math.sin(self._circle) * r)
 	self._goal_speed = FLY_SPEED
-	kc.keep_clearance(self, self_pos, dtime, MIN_CLEARANCE)
+	keep_clearance(self, self_pos, dtime)
 	if not self._beam_time and (self._beam_cooldown or 0) <= 0 and line_of_sight
 			and vector.distance(self_pos, target_pos) <= BEAM_RANGE then
 		start_beams(self)
@@ -635,6 +766,7 @@ function ghidorah:run_ai(dtime, moveresult)
 	local self_pos = self.object:get_pos()
 	if self._anim_lock then self._anim_lock = self._anim_lock - dtime end
 	self._beam_cooldown = math.max((self._beam_cooldown or 0) - dtime, 0)
+	self._side_main_cd = math.max((self._side_main_cd or 0) - dtime, 0)
 	kc.ensure_hitboxes(self, HITBOXES)
 	regrow_step(self, dtime)
 	beams_step(self, dtime)
@@ -659,7 +791,7 @@ function ghidorah:run_ai(dtime, moveresult)
 	end
 	self.attacking = nil
 	fly_wander(self, self_pos, dtime)
-	kc.keep_clearance(self, self_pos, dtime, MIN_CLEARANCE)
+	keep_clearance(self, self_pos, dtime)
 end
 
 function ghidorah:attack_end()
@@ -671,15 +803,19 @@ function ghidorah:attack_end()
 	return mob_class.attack_end(self)
 end
 
+-- No bite while the side heads fire at the main target.
+function ghidorah:pre_melee_attack(distance, delay, line_of_sight)
+	if self._beam_side == "main" then return false end
+	return mob_class.pre_melee_attack(self, distance, delay, line_of_sight)
+end
+
 function ghidorah:gopath(...)
 	return kc.gopath(self, ...)
 end
 
 function ghidorah:ai_step(dtime)
 	mob_class.ai_step(self, dtime)
-	if not self._flying then
-		kc.smash_step(self, dtime, "ghidorah:ghidorah")
-	end
+	kc.smash_step(self, dtime, "ghidorah:ghidorah", self._flying and FLY_SMASH or nil)
 end
 
 function ghidorah:check_standin(dtime, attach_pos)

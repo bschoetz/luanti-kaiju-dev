@@ -119,17 +119,18 @@ Limitations on VoxeLibre:
   stretches; a wall longer than about 40 nodes can't be walked around and is bulldozed
   (with `kaiju_smash_blocks` off: pushed against). Caves and overhangs lower than the
   body count as walls.
-- **Simpler walking physics** (gravity, a fixed walking speed, braking in water, pushing
-  out of other mobs), tuned so that Gojira's speeds match Mineclonia's (about 6 nodes/s on
-  land, 5 swimming). Punches cause no knockback.
-- **No environmental damage except burning**: lava, fire nodes, suffocation, drowning and
-  fall damage don't hurt the kaiju (on Mineclonia they are fire resistant or switch most of
-  this off anyway).
-- **No alerts**: Gojira's last targeting rule (mobs alerting others of their kind) never
-  fires, as VoxeLibre's mobs send no such alerts.
+- **Simpler walking physics** (a fixed walking speed, braking in water, pushing out of
+  other mobs; gravity is Mineclonia's), tuned so that Gojira's speeds match Mineclonia's (about 6 nodes/s on
+  land, 5 swimming). A kaiju's bite throws a player as on Mineclonia (the layer applies
+  Mineclonia's formula); a mob it bites gets VoxeLibre's own knockback, about as far.
+- **Environmental damage** is the layer's copy of Mineclonia's (lava, fire, magma floors,
+  suffocation; `kaiju_core/README.md` §7). Not copied: rain keeping a kaiju from catching
+  fire, powder snow.
 - **Griefing** follows VoxeLibre's `mobs_griefing` setting for all kaiju (Mineclonia: a
   gamerule per mob), and the 5 % block drops follow `mcl_doTileDrops`.
-- VoxeLibre has no ghast hurt sound: Ghidorah uses the enderman's.
+- VoxeLibre has no ghast hurt sound: Ghidorah uses the parrot's.
+- VoxeLibre's armour rounds each hit to whole HP, so Ghidorah's beams (1 per head on
+  players) are dealt as one hit per tick; a single head still does nothing through iron.
 
 #### API comparison
 
@@ -139,7 +140,7 @@ Every external API the kaiju use, Mineclonia (vendor checkout) against VoxeLibre
 | API | Mineclonia | VoxeLibre 0.92.4 | On VoxeLibre |
 |---|---|---|---|
 | `mcl_mobs.register_mob(name, def)` | keeps every field of `def` (methods and `_fields` included) | copies a fixed list of fields; requires `spawn_class`; HP in `initial_properties` | layer: registers, then copies the remaining fields, puts its class under the entity, sets `spawn_class`, `can_despawn = false` and `initial_properties` (boxes, size, HP) |
-| `_targeting_rules`, `build_nearest_target_rule`, `build_retaliation_target_rule`, `build_alert_receiver_rule`, `build_target_rule` | yes | no (`monster_attack`, `specific_attack`, `do_attack`) | layer: own implementation; no `alert_others`; the alert receiver rule never fires |
+| `_targeting_rules`, `build_nearest_target_rule`, `build_retaliation_target_rule`, `build_target_rule` | yes | no (`monster_attack`, `specific_attack`, `do_attack`) | layer: own implementation; no `alert_others`, no alert receiver rule (no kaiju uses one) |
 | `run_ai`, `ai_functions`, `ai_step`, `check_attack`, `get_active_target`, `attack_end`, `check_pace`, `check_timer` | yes | no (`do_states` state machine) | layer |
 | `attack_null`, `attack_melee`, `pre_melee_attack`, `custom_attack`, `melee_interval`, `_melee_esp` | yes | `attack_type` dogfight/shoot/explode | layer: Mineclonia's melee (walk at the target, bite in reach and in sight) |
 | `check_standin`, `_immersion_depth`, `_liquidtype` | yes | no (`standing_in`) | layer: water depth above the feet |
@@ -157,7 +158,7 @@ Every external API the kaiju use, Mineclonia (vendor checkout) against VoxeLibre
 | `mcl_mobs.register_egg` | yes | yes, same signature; places with `force` (no room check) | unchanged |
 | `mcl_mobs.register_arrow`, `_lifetime`, `hit_mob`, `_shooter` | `_lifetime` in steps | on `vl_projectile`: `_lifetime` in seconds, hits within 1.5 nodes, `hit_object` for other entities | layer: converts the lifetime, raycasts along the path (then the stock check, which also finds players without `enable_pvp`), passes hit-box hits to the kaiju, never hits the shooter |
 | `mcl_mobs.get_arrow_damage_func(damage, type, shooter)` | with source | without source | layer: with source (retaliation) |
-| `knockback_resistance`, `knock_back`, `projectile_knockback` | yes | `knock_back` | the layer's `on_punch` has no knockback |
+| `knockback_resistance`, `knock_back`, `projectile_knockback` | yes | `knock_back` | the layer's `on_punch` has no knockback (the kaiju take none); an `on_punchplayer` callback throws a bitten player with Mineclonia's formula and gates (1 + `_attack_knockback`; alive, raw damage > 0, no shield) in place of the engine's |
 | `step_drowning`, fall damage, environment damage | yes | `do_env_damage`, `falling` | not run (see limitations); `mcl_burning.tick` is |
 | `mobs_mc.is_mob_griefing_enabled` (gamerule `mobs_griefing`) | yes | no; setting `mobs_griefing` | `kaiju_core.mob_griefing` |
 | `mcl_vars.do_tile_drops` (gamerule `doTileDrops`) | yes | no; setting `mcl_doTileDrops` | `kaiju_core.tile_drops` |
@@ -169,7 +170,7 @@ Every external API the kaiju use, Mineclonia (vendor checkout) against VoxeLibre
 | `mcl_init` (`mcl_vars`) | yes | yes | unchanged |
 | Mob names in rules: `mobs_mc:iron_golem`, `bat`, `blaze`, `vex`, `ghast` | yes | yes | unchanged |
 | Mob fields read on other mobs: `is_mob`, `type`, `dead`, `collisionbox`, `swims`, `breathes_in_water` | yes | `dead` and `collisionbox` missing | `dead` → `state == "die"` in the layer's target checks; Cthulhu falls back to the object's collision box |
-| Sounds `mobs_mc_*` (bear, wither, ender dragon, parrot, vex, guardian, squid) | yes | yes, except `mobs_mc_ghast_hurt` | layer: replaced by `mobs_mc_enderman_hurt` |
+| Sounds `mobs_mc_*` (bear, wither, ender dragon, parrot, vex, guardian, squid) | yes | yes, except `mobs_mc_ghast_hurt` | layer: replaced by `mobs_mc_parrot_hurt` |
 | Textures `fire_basic_flame`, `mcl_particles_*`, `spawn_egg*` | yes | yes | unchanged |
 | Nodes: group `water`, `mcl_core:water_source`, `mcl_fire:fire`; drops `mcl_core:diamond`, `mcl_mobitems:*`, `mcl_ocean:prismarine_crystals`, `mcl_nether:glowstone_dust` | yes | yes | unchanged |
 | `mcl_core:goldblock` (Ghidorah's drop; it used to say `gold_block`, which neither game has) | yes | yes | fixed for both games |

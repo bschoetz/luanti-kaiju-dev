@@ -153,12 +153,17 @@ end
 local function wander(self, self_pos, dtime)
 	self._wander_timer = (self._wander_timer or 0) - dtime
 	local goal = self._goal
-	if not goal or self._wander_timer <= 0 or vector.distance(self_pos, goal) < 2 then
+	-- a wall or a low roof in the way (keep_clearance, under a roof): another direction
+	local blocked = self._blocked
+	if not goal or blocked or self._wander_timer <= 0 or vector.distance(self_pos, goal) < 2 then
 		local ang, dist = math.random() * 2 * math.pi, 16 + math.random() * 24
 		local p = vector.offset(self_pos, math.cos(ang) * dist, 0, math.sin(ang) * dist)
-		p.y = ground_y(vector.new(p.x, self_pos.y + 30, p.z)) + ALTITUDE + math.random() * 6
+		p.y = kaiju_core.cruise_y(p, self_pos.y, ALTITUDE + math.random() * 6, self.collisionbox[5])
 		self._goal, self._goal_speed = p, WANDER_SPEED
 		self._wander_timer = 6 + math.random() * 6
+		-- keep_clearance checks the new path in this step: she never flies a moment
+		-- towards a goal behind a wall (cornered, those moments added up)
+		self._floor, self._blocked = nil, nil
 	end
 	set_anim(self, vector.distance(self_pos, self._goal) > 4 and "fly" or "stand")
 end
@@ -314,7 +319,7 @@ function mothra:run_ai(dtime)
 		if not leg or (leg.x - self_pos.x) ^ 2 + (leg.z - self_pos.z) ^ 2 < 25 then
 			local d = vector.subtract(retreat, self_pos)
 			local p = vector.add(self_pos, vector.multiply(d, math.min(1, 30 / vector.length(d))))
-			p.y = ground_y(vector.new(p.x, self_pos.y + 30, p.z)) + ALTITUDE
+			p.y = kaiju_core.cruise_y(p, self_pos.y, ALTITUDE, self.collisionbox[5])
 			self._goal, self._goal_speed, self._retreat_leg = p, WANDER_SPEED, p
 		end
 		set_anim(self, "fly")

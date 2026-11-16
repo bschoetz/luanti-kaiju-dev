@@ -28,15 +28,15 @@ A 15-node, fire-breathing kaiju with 500 HP. He hunts players and iron golems, w
 lakes and swims in deep water, and smashes through forests, houses and hills on his way,
 while the ground he stands on stays intact. Chests he tramples drop their contents.
 
-- **Bite:** 18 damage, reach 7 nodes.
-- **Fire breath:** at targets 9 to 32 nodes away, about 18 flames of 2 damage that set you
-  on fire for 6 s and ignite blocks. He breathes upwards at flying targets.
+- **Bite:** 18 damage, at whatever is within 7 nodes of his body, feet to head.
+- **Fire breath:** at targets beyond his bite, up to 32 nodes away: about 18 flames of 2
+  damage that set you on fire for 6 s and ignite blocks. He breathes upwards at flying
+  targets, up to 48 nodes.
 - Immune to fire, lava, falling and drowning. Punches and arrows don't push him back.
 
 **Fighting him:** he outruns a sprinting player (6 nodes/s). Punches only do 40 % of their
-damage, arrows do it all, and his chest and head have hit boxes of their own. Between 7 and
-9 nodes from him he can neither bite nor breathe. Creative players and peaceful mode are
-safe. Killed, he drops diamonds and bones.
+damage, arrows do it all, and his chest and head have hit boxes of their own. Creative
+players and peaceful mode are safe. Killed, he drops diamonds and bones.
 
 ### Mothra
 
@@ -60,11 +60,14 @@ glowstone dust.
 A three-headed golden dragon, about 20 nodes tall, with 600 HP. He walks and flies, and hunts
 Gojira, Mothra and players.
 
-- **Gravity beams:** from each head, 3 damage per head four times a second, range 40 nodes.
-  They blast small craters into what they hit.
-- **Bite:** 13 damage on the ground.
+- **Gravity beams:** from each head, 3 damage per head four times a second (1 on players),
+  range 40 nodes. They pass through small mobs and blast small craters into what they hit.
+- **Bite:** 10 damage on the ground.
 - **Three heads:** each has 120 HP of its own. A head that runs out is severed and grows back
-  after 30 s. While his main head fights one enemy, the side heads beam others on their own.
+  after 30 s. While his main head fights one enemy, the side heads beam others on their
+  own, and now and then the enemy he is biting.
+- **In the air** he tears down the trees and buildings he flies through; natural terrain
+  stays.
 
 **Fighting him:** shoot the heads. He dies when his body runs out of HP **or** when all
 three heads are off at the same time. Cover stops the beams until they blast it away.
@@ -109,11 +112,11 @@ modpack **Kaiju** (all five mods), and **Save**.
 
 - **Mineclonia:** the game the kaiju are written and tested for.
 - **VoxeLibre** (tested with 0.92.4): everything works, with these limitations:
-  - no pathfinder: the kaiju walk straight at their target, smashing what is in the way;
-  - simpler walking physics, and punches cause no knockback;
-  - lava, fire, suffocation, drowning and falls don't hurt the kaiju (burning does);
+  - a simpler pathfinder: it plans 24 nodes ahead, so very long walls are smashed through
+    instead of walked around;
+  - simpler walking physics;
   - griefing follows VoxeLibre's `mobs_griefing` setting for all kaiju;
-  - Ghidorah uses the enderman's hurt sound.
+  - Ghidorah uses the parrot's hurt sound.
 
 ## Settings
 
@@ -122,7 +125,7 @@ at once, also with `/set` in a running game.
 
 | Setting | Default | Off means |
 |---|---|---|
-| `kaiju_smash_blocks` | `true` | Gojira, Ghidorah and Cthulhu break no blocks. They then get stuck in forests and towns. |
+| `kaiju_smash_blocks` | `true` | Gojira, Ghidorah and Cthulhu break no blocks. They then get stuck in forests and towns; Ghidorah flies over what he would have torn down. |
 | `kaiju_gojira_fire` | `true` | Gojira's breath sets no blocks on fire. It still burns whoever it hits. |
 | `kaiju_ghidorah_beam_blasts` | `true` | Ghidorah's beams blast no craters. They still hurt. |
 

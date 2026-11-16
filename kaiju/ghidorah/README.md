@@ -42,7 +42,7 @@ Related documents: the modpack [`../README.md`](../README.md),
 | Head HP | 120 each (`HEAD_HP`) | Separate from the body, see §3.8. |
 | Armor | `armor = 50` | Punches (players, mob melee, explosions) deal 50 %. Damage through `mcl_util.deal_damage` (arrows, Mothra's gust) arrives in full, as for Gojira ([`gojira/README.md`](../gojira/README.md) §1). Measured: a Gojira bite (18) takes 9 off a head, an arrow took 29 off a head and 29 off the body. |
 | Knockback | none | `kaiju_core.no_knockback(ghidorah)` |
-| Bite | 13 damage every 1.5 s, reach 8 nodes | Stock `mob_class.attack_melee`, on the ground only. Reach is measured from his feet. Weaker than Gojira's (18): his weapon is the beams (§8, Balance). |
+| Bite | 10 damage every 1.5 s, reach 8 nodes | Stock `mob_class.attack_melee`, on the ground only. Reach is measured from his feet. Weaker than Gojira's (18): his weapon is the beams (§8, Balance). |
 | Gravity beams | 3 damage per head every 0.25 s, range 40 nodes | A volley lasts 2.5 s and fires for the last 2 s, every 8 s. Up to about 72 damage if all three heads hit for a whole volley. |
 | Walk speed | `movement_speed = 7.5`, pacing x0.5 | Same as Gojira. |
 | Flight speed | 9 nodes/s in a fight and while landing, 5 while roaming | `FLY_SPEED`, `WANDER_SPEED` |
@@ -116,7 +116,7 @@ forests.
 **On VoxeLibre** (0.92.4, through `kaiju_core/vl.lua`, see
 [`../README.md`](../README.md#voxelibre)) he walks, flies, beams, bites, loses and regrows
 heads as described here. On foot he walks straight at his target (no pathfinder);
-`mobs_griefing` is a plain setting there; his hurt sound is the enderman's (VoxeLibre's
+`mobs_griefing` is a plain setting there; his hurt sound is the parrot's (VoxeLibre's
 ghast has none).
 
 ---
@@ -196,21 +196,37 @@ One flag, `_flying`, switches the physics, as sketched in
 
 | State | Condition | Action |
 |---|---|---|
-| On the ground, has a target | target more than 6 nodes above its ground (`AIRBORNE_TARGET`), **or** more than 48 nodes away (`FAR_TARGET`), **or** a bulldoze is running (`_bulldoze_time > 0`) and he has flown fewer than 3 times for that reason (`_stuck_flights`) | `take_off` |
+| On the ground, has a target | target more than 6 nodes above its ground (`AIRBORNE_TARGET`), **or** more than 48 nodes away (`FAR_TARGET`), **or** a bulldoze is running (`_bulldoze_time > 0`) and he has flown fewer than 3 times for that reason (`_stuck_flights`); **and** no roof within 6 nodes above his head (`FLY_ROOM`; `kaiju_core.ceiling_y`, leaves are no roof), **and** `_no_fly` has run out | `take_off` |
+| Flying, not landing | `kaiju_core.keep_clearance` found the path blocked (`_blocked`: a wall, rock, or a gap lower than 17 nodes under a roof) | `_land = true`, `_no_fly = 20` s (`NO_FLY_TIME`) |
 | Flying, has a target | target not airborne and horizontally closer than 25 nodes (`LAND_DIST`) | `_land = true` |
 | Flying, no target | 15 checks in a row without a target (`IDLE_FLIGHT`, about 15 s) | `_land = true` |
 
 He never takes off without a target. The gap between 25 and 48 nodes is the
 hysteresis: in it he stays in the mode he is in. `_stuck_flights` is reset in
-`attack_end`.
+`attack_end`. `_no_fly` (seconds, counted down every step) keeps him on foot after a
+blocked flight: without it he took off again at once for the same far target. Under a
+roof lower than 21 nodes he stays on foot altogether: he walks, bulldozes and beams.
 
 - **`take_off`:** a running bulldoze is ended (`kaiju_core.end_bulldoze`, so one stuck
   event causes one flight), `physical = false`, navigation cancelled, goal 18 nodes (`ALTITUDE`)
-  straight up at 9 nodes/s, "takeoff" clip locked for 1 s, `war_cry` sound.
-- **Landing:** while `_land` is set, `motion_step` sets the goal to the ground directly
-  below him at `FLY_SPEED` and clears `_floor`, and `run_ai` skips `keep_clearance`, so
-  nothing holds him up. Less than 1.5 nodes above the ground `touch_down` runs.
-  Measured before and after the review: 9 s from 40 nodes at the old 5 nodes/s, 5 s now.
+  straight up at 9 nodes/s, or lower: his head stays 2 nodes under a roof. "takeoff" clip
+  locked for 1 s, `war_cry` sound. If the way to the target is blocked under that roof, the
+  first clearance check after the clip says so and he comes down again after a hop of a
+  node or two (`ghidorah_ceiling`, phase "cavern").
+- **Landing:** when `_land` is set, `choose_mode` picks the spot (`find_landing_spot`, at
+  once for the first three candidates, three more per second): the column below him, then
+  the nearest of 8 points on a ring of 12 nodes (`LAND_RING`) around the target (without a
+  target within 30 nodes: 10 and 20 nodes around himself). A spot must pass
+  `kaiju_core.landing_ok`: level, walkable ground under the centre and the corners of his
+  box, no leaves and no liquid on the way down. If none of the 9 does, he comes down
+  where he is, as he always did (so with smashing on `touch_down` clears a forest spot,
+  and water is the last resort). `_land_spot` is a plain table (it is saved with him).
+  `motion_step` hovers until the spot is chosen, flies over to it at his height with
+  `keep_clearance` (for at most 10 s, `LAND_TRANSIT`, then he comes down where he is), and
+  then sets the goal to the ground directly below him at `FLY_SPEED` and clears `_floor`,
+  without `keep_clearance`, so nothing holds him up. Less than 1.5 nodes above the ground
+  `touch_down` runs. On open flat ground the first candidate passes and nothing changed.
+  Measured before and after the first review: 9 s from 40 nodes at the old 5 nodes/s, 5 s now.
 - **`touch_down`:** if `kaiju_core.griefing_enabled(..., "kaiju_smash_blocks")`, one
   `kaiju_core.smash(self, {lookahead = 0})` pass clears his body box, so he doesn't
   land inside trees or houses. Then `physical = true`, velocity zero, "land" clip
@@ -219,8 +235,8 @@ hysteresis: in it he stays in the mode he is in. `_stuck_flights` is reset in
   `MIN_CLEARANCE = 12`, see [`kaiju_core/README.md`](../kaiju_core/README.md) §3.6. He
   faces his target, or the flight direction without one.
 - **`fly_wander`** (flying without a target): a new goal 20-50 nodes away in a random
-  direction, 18-26 nodes above the ground there, every 8-14 s or on arrival, at 5
-  nodes/s, with the "fly" clip.
+  direction, 18-26 nodes above the ground there (`kaiju_core.cruise_y`: lower under a roof),
+  every 8-14 s or on arrival, at 5 nodes/s, with the "fly" clip.
 - **Death in the air:** `kaiju_core.death_fall`. His die clip plus the delay is 4.5 s,
   longer than the 2.5 s fall.
 
@@ -282,6 +298,25 @@ valid target fires once (`beam_tick`).
 After a volley the cooldown is 8 s (`BEAM_INTERVAL`) if at least one beam fired, and
 2 s if none did (a side head whose enemy got away tries again soon). `attack_end` ends
 a running volley.
+
+**Main side volley** (`_beam_side == "main"`, `ground_attack`). With the main target in
+melee (closer than `BEAM_MIN_DIST`) and no enemy of their own, the side heads fire a
+volley at the main target every `SIDE_MAIN_INTERVAL` (12 s): `SIDE_MAIN_DAMAGE` 1 per head
+and tick, and he doesn't bite meanwhile (`pre_melee_attack`). It has its own cooldown
+(`_side_main_cd`) and leaves `_beam_cooldown` alone. The gate is `beam_reaches`, a dry run
+of the beam: in melee a side head can't turn far enough down to aim at the target's
+centre (about 60° yaw and pitch against Gojira), but the clamped beam still enters a
+kaiju's box, so it fires; a player below the heads it would miss, so no volley starts
+(looked at once a second, and again every tick of the volley). `ghidorah_sidemain`: 3
+volleys in 40 s of melee with Gojira, 16 damage each; none at a player 5 nodes in front.
+
+**What a beam hits** (`beam_tick`). Every enemy on the line takes the damage; the beam
+ends at its target, at the first player or kaiju, or at a node. Smaller mobs let it
+through. Players take `BEAM_PLAYER_DAMAGE` 1 per head and tick instead of 3, and
+`beams_step` deals the hits of all heads on one player in a tick as a single hit: armour
+takes a share of every hit and VoxeLibre rounds the rest to whole HP, so three hits of 1
+would do nothing through iron armour. A full volley (`ghidorah_beam`): 24 on a bare
+player, 10 (Mineclonia) or 8 (VoxeLibre) through full iron.
 
 **One beam** (`beam_tick`):
 
@@ -425,7 +460,11 @@ His own selection box (`{-3, 0, -3, 3, 15, 3}`) still takes punches to the body.
 All of it is `kaiju_core`, see [`kaiju_core/README.md`](../kaiju_core/README.md) §3.2-3.4.
 
 - `ghidorah._smash = {lookahead = 3, tail = {segments = TAIL, unit = UNIT, first = 2}}`.
-  `smash_step` runs from `ai_step` on the ground only; in the air he smashes nothing.
+  In the air `ai_step` passes `FLY_SMASH = {lookahead = 12, keep = "natural"}` to
+  `smash_step` instead: he tears down what he flies through (trees, buildings), natural
+  terrain stays, and his `keep_clearance` calls ignore what he may break, so he flies
+  through a tower instead of over it (`kaiju_core/README.md` §3.2, §3.6). With
+  `kaiju_smash_blocks` or griefing off, and over protected areas, he flies over as before.
 - `TAIL` has five entries with a fifth value, the sideways offset. `kaiju_core` sweeps
   such a segment twice, once on either side, which gives the two splayed tails.
   Segments 2 to 5 are swept (8.4 to 20 units, i.e. 6.3 to 15 nodes behind him).
@@ -488,6 +527,9 @@ Behaviour (`init.lua:36-62`):
 | `BEAM_START` | 0.5 s | Rear-up before the first tick |
 | `BEAM_TICK` | 0.25 s | |
 | `BEAM_DAMAGE` | 3 | Per head and tick |
+| `BEAM_PLAYER_DAMAGE` | 1 | Per head and tick on a player, summed per tick |
+| `SIDE_MAIN_INTERVAL` | 12 s | Between the side heads' volleys at a main target in melee |
+| `SIDE_MAIN_DAMAGE` | 1 | Per head and tick in those |
 | `BEAM_RANGE` | 40 | Also the search radius of the side heads |
 | `BEAM_MIN_DIST` | 8 | Closer than this he bites instead (ground only) |
 | `BEAM_MIN_TIME` | 1.5 s | On the ground the target must have been `BEAM_MIN_DIST` away for this long before a full volley (§3.5) |
@@ -504,6 +546,10 @@ Behaviour (`init.lua:36-62`):
 | `FAR_TARGET` | 48 | Take off for targets further away |
 | `LAND_DIST` | 25 | Land when a ground target is closer (horizontally) |
 | `IDLE_FLIGHT` | 15 | Seconds of flight without a target before landing |
+| `FLY_ROOM` | 6 | Free nodes above his head that he needs to take off |
+| `NO_FLY_TIME` | 20 s | On foot after a blocked flight |
+| `LAND_RING` | 12 | Landing spots are tried this far around the target |
+| `LAND_TRANSIT` | 10 s | Time to reach a landing spot before he comes down where he is |
 | `HEAD_AIM_MAX` | 60° | Aim cone of a head, yaw and pitch |
 
 Fixed numbers in the code: aim update every 0.2 s with a 0.03 rad threshold
@@ -710,13 +756,15 @@ run; **[unverified]** = plausible but not checked.
 5. **Aim adds some roll in the beam pose** [code]. The override turns about the parent
    neck's axes, which are tilted while he rears. A large yaw adds a few degrees of
    roll.
-6. **A hit on a stump damages the body** [code]. The hit box of a severed head stays
-   at the stump and passes hits on as body damage.
-7. **The beam hits whatever enemy is first on the ray** [code]. That can be a mob that
-   is not his target, such as an animal standing in the line.
-8. **Beam damage is high for unarmoured players** [code]. Three heads deal 9 damage
-   every 0.25 s by raycast after a 0.5 s rear-up. Cover works until the blasts remove
-   it. To soften it, lower `BEAM_DAMAGE`.
+6. **A hit on a stump damages the body** [code + test]. The hit box of a severed head
+   moves to the neck joint (`ghidorah_beam`: it stayed 2.25 nodes in front, where the
+   skull was) and passes hits on as body damage.
+7. **The beam stops at the first player or kaiju on the ray** [code + test]. That may
+   not be his target. Smaller mobs are hurt and let it through.
+8. **Beam damage on players** [code + test]. 1 per head and tick, 3 at most per tick,
+   after a 0.5 s rear-up: a full volley takes 24 from a bare player. On VoxeLibre one
+   head alone does nothing through iron armour and two nothing through diamond (armour
+   rounds to whole HP). Cover works until the blasts remove it.
 9. **Side-only volleys can be empty** [code + test]. They start whenever
    `_head_target_l` or `_head_target_r` is set, and the target can leave the cone
    before the first tick. (A severed head no longer has a target, so a stump alone
@@ -730,13 +778,23 @@ run; **[unverified]** = plausible but not checked.
     `_bulldoze_time` still set after landing and took off again, up to the cap of 3 per
     target. `take_off` now calls `kaiju_core.end_bulldoze` (`ghidorah_heads`:
     `stuck take-off: flying=true _bulldoze_time=nil`).
-12. **He lands straight down** [code]. The landing goal is the ground below him,
-    wherever that is, including water or a roof. With smashing enabled `touch_down`
-    clears his body box there; without it he can land inside a tree.
-13. **Flight passes through terrain** [code]. Flying he is non-physical, like Mothra.
-    `keep_clearance` keeps him above the ground along his path, but he can take off
-    through a cave roof. See [`kaiju_core/README.md`](../kaiju_core/README.md) §6.9-6.11.
-14. **No smashing in the air** [code]. Tree tops and towers he flies through stay.
+12. **Landing spots (fixed)** [code + test]. He used to land straight down, also on
+    water, a roof or, without smashing, inside a tree. Now he looks for level, dry ground
+    below him or around the target first (§3.4, `ghidorah_ceiling` phase "forest": he
+    lands in a clearing instead of on the trees). Only five rays check a spot, so a
+    single thin trunk between them is not seen; and when no spot is found he still comes
+    down where he is.
+13. **Roofs (fixed)** [code + test]. Flying he is non-physical, like Mothra. He no longer
+    takes off through a roof (he needs 6 free nodes above his head, else he stays on
+    foot), stays below a roof in flight, and lands when the way is blocked
+    (`ghidorah_ceiling`; [`kaiju_core/README.md`](../kaiju_core/README.md) §3.6, §6.10).
+    He looks for no way around: after a blocked flight he walks (and bulldozes) for 20 s
+    before he tries again. Leaves and the caps of the Nether's huge fungi are no roof: he
+    takes off through a canopy.
+14. **Smashing in the air** [code + test]. Natural nodes stay, and a placed block of a
+    natural kind (dirt, stone, plain sandstone) counts as natural: he flies over such a
+    building. A tower loses the slice he flies through; the rest stays in the air.
+    `ghidorah_airsmash`.
 15. **Network cost** [code]. Up to 15 bone override messages a second, plus four hit
     box objects that move every server step. Fine for one Ghidorah.
 16. **Staticdata keeps transient state** [code]. A volley, a cooldown, `_flying` and
@@ -788,7 +846,9 @@ peaceful players.
   |---|---|---|
   | Before (melee standoff as first committed) | Ghidorah 5 of 5, at 105 s, with 235-246 of 600 left | Ghidorah 5 of 5: Gojira dead at 60-72 s, Ghidorah 161-197 left, Mothra 176-221 |
   | Bites hit the body, no hits on the ally | Gojira 5 of 5, at 101-102 s, with 12-18 of 500 left | Ghidorah dead 8 of 8 at 60-70 s, Gojira 17-203 left, Mothra 158-308 |
-  | Plus the wait before a volley and bite 16 → 13 (now) | **Gojira 6 of 6, at 100-107 s, with 90-104 left (18-21 %)** | **Ghidorah dead 5 of 5 at 61-66 s, Gojira 173-283 left (35-57 %), Mothra 248-272** |
+  | Plus the wait before a volley and bite 16 → 13 | Gojira 6 of 6, at 100-107 s, with 90-104 left (18-21 %) | Ghidorah dead 5 of 5 at 61-66 s, Gojira 173-283 left (35-57 %), Mothra 248-272 |
+  | Plus the side heads' volleys at a melee target (16 per volley, every 12 s, no bite meanwhile) and bite 13 → 10 (now; Mineclonia) | **Gojira 6 of 6, at 96-102 s, with 80-112 left (16-22 %)** | **Ghidorah dead 4 of 4 at 57-61 s, Gojira 216-314 left, Mothra 197-254** |
+  | The same on VoxeLibre | Gojira 6 of 6, at 98-100 s, with 84 left (17 %) | Ghidorah dead 4 of 4 at 56-60 s, Gojira 282-288 left, Mothra 236-278 |
 
   What was wrong, and what changed:
 
@@ -808,6 +868,11 @@ peaceful players.
      him 72 and Ghidorah about 32. Ghidorah's bite went from 16 to 13 (5.2 per bite on
      Gojira) to widen that to about 95 HP. The beams, his danger to Mothra and to
      players, are untouched; so is his HP.
+
+  5. *No beams in a one-on-one melee.* The side heads now fire at the enemy he is
+     biting (§3.7, main side volley). In about 88 s of melee that is 7 volleys of 16,
+     less the bites he skips meanwhile; his bite went from 13 to 10 to pay for it, which
+     leaves the duel where it was (Gojira's HP left: 95 before, 80-112 after).
 
   The duel is nearly deterministic on flat ground, which is why the spread is so
   small; hills, water and buildings are not covered. In the triangle the spread comes
