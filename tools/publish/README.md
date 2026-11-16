@@ -8,8 +8,7 @@ Giant monsters for the [Mineclonia](https://codeberg.org/mineclonia/mineclonia) 
 fighting, and they fight each other as well as you: Gojira, Mothra, King Ghidorah and
 Cthulhu.
 
-This is a fan project, made out of love for the old monster films. The names stay as they
-are.
+This is a fan project, made out of love for the old monster films.
 
 Contributions go to the development repository,
 [luanti-kaiju-dev](https://github.com/bschoetz/luanti-kaiju-dev): this repository is
