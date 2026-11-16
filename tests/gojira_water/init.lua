@@ -25,7 +25,7 @@ core.register_on_joinplayer(function(player)
 				fill(vector.new(-20, 5, 2), vector.new(20, 8, 12), "mcl_core:water_source")
 				fill(vector.new(-20, -13, 16), vector.new(20, 8, 32), "mcl_core:water_source")
 				L("pools built, target locked")
-				local last = g:get_pos()
+				local last, best = g:get_pos(), math.huge
 				for i = 1, 60 do
 					core.after(i * 0.5, function()
 						local p = g:get_pos(); if not p then return end
@@ -34,6 +34,12 @@ core.register_on_joinplayer(function(player)
 							vector.distance(vector.new(p.x, 0, p.z), vector.new(last.x, 0, last.z)) / 0.5, region(p.z),
 							ent._immersion_depth or 0, tostring(ent._current_animation), tostring(ent._breath_time ~= nil), tostring(ent._bulldoze_time ~= nil)))
 						last = p
+						-- at some point out of the water (y >= 4.4) and near the player's pillar at (0, -10), not in a
+						-- tunnel below it: checked over the run, since he may climb late or chase past the pillar
+						if p.y >= 4.4 then best = math.min(best, kaiju_test.flat(p, vector.new(0, 0, -10))) end
+						if i == 60 then
+							kaiju_test.result({pillar = best}, {"pillar"}, {{"pillar", {0, 10}}})
+						end
 					end)
 				end
 			else core.after(0.3, wait) end

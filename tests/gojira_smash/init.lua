@@ -23,7 +23,10 @@ local CHEST = vector.new(0, 9, 3)
 local function count(name, p1, p2)
 	local _, c = core.find_nodes_in_area(p1, p2, name); return c[name] or 0
 end
-local function report(tag)
+-- Good: RESULT ok (the last report): the chest's contents lie on the ground, no sand
+-- floats, and he broke into the ring and felled trees. How much falls depends on his route
+-- (tests/README.md), so the counts are only lower bounds.
+local function report(tag, final)
 	local items = {}
 	for _, obj in ipairs(core.get_objects_inside_radius(vector.new(0, 9, 3), 25)) do
 		local e = obj:get_luaentity()
@@ -43,6 +46,18 @@ local function report(tag)
 		core.get_node(CHEST).name .. " hive=" .. core.get_node(vector.new(-1, 9, 4)).name .. " nest=" .. core.get_node(vector.new(1, 9, 4)).name, count("mcl_core:stone", vector.new(-9, 9, -9), vector.new(9, 28, 9)),
 		count(TREE, vector.new(-12, 9, 12), vector.new(12, 16, 28)),
 		count("mcl_core:sand", vector.new(-12, 9, -12), vector.new(12, 30, 30)), floating, table.concat(parts, ", ")))
+	if not final then return end
+	local nav = kaiju_core._vl_nav_stats -- (VoxeLibre: the path searches)
+	if nav then
+		L(("NAV plans=%d partial=%d failed=%d avg_us=%d max_us=%d"):format(nav.plans, nav.partial, nav.failed,
+			nav.total_us / math.max(nav.plans, 1), nav.max_us))
+	end
+	kaiju_test.result({gold = items["mcl_core:gold_ingot"] or 0, emerald = items["mcl_core:emerald"] or 0,
+			floating_sand = floating, wall_removed = 1440 - count("mcl_core:stone", vector.new(-9, 9, -9), vector.new(9, 28, 9)),
+			trunks_removed = 168 - count(TREE, vector.new(-12, 9, 12), vector.new(12, 16, 28)), nav_max_us = nav and nav.max_us or 0},
+		{"gold", "emerald", "floating_sand", "wall_removed", "trunks_removed", "nav_max_us"},
+		{{"gold", 17}, {"emerald", 5}, {"floating_sand", 0}, {"wall_removed", {80, 1440}}, {"trunks_removed", {12, 168}},
+		{"nav_max_us", {0, 20000}}})
 end
 
 local function fill(p1, p2, name)
@@ -99,7 +114,7 @@ core.register_on_joinplayer(function(player)
 		end
 		wait()
 	end)
-	for t = 10, 60, 10 do core.after(t, function() report("t=" .. t) end) end
+	for t = 10, 60, 10 do core.after(t, function() report("t=" .. t, t == 60) end) end
 	-- Gojira's track, to see whether he walked through the house (chest at 0,9,3)
 	for t = 2, 40, 2 do core.after(t, function()
 		for _, o in pairs(core.luaentities) do

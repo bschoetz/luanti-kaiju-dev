@@ -3,7 +3,8 @@
 -- "on"). Each phase: Gojira behind a cobble wall he must break to reach the player, one
 -- flame shot at a wooden wall, and a beam volley of Ghidorah at the player, who is made
 -- unpointable so that the beams pass through him into the ground.
--- Good: "off" changes nothing (wall_broken=0 fire=0 crater=0), "on" gives all three > 0.
+-- Good: RESULT ok: "off" changes nothing (wall_broken=0 fire=0 crater=0), "on" gives all
+-- three > 0.
 local function L(s) core.log("action", "[test] " .. s) end
 local SETTINGS = {"kaiju_smash_blocks", "kaiju_gojira_fire", "kaiju_ghidorah_beam_blasts"}
 
@@ -22,6 +23,8 @@ local GROUND1, GROUND2 = vector.new(-15, 6, -40), vector.new(15, 8, 0)
 core.register_globalstep(function()
 	for _, pl in ipairs(core.get_connected_players()) do if pl:get_hp() > 0 then pl:set_hp(20) end end
 end)
+
+local r = {}
 
 local function phase(tag, player, done)
 	fill(WALL1, WALL2, "mcl_core:cobble")
@@ -49,6 +52,7 @@ local function phase(tag, player, done)
 		end) end
 		core.after(5, function()
 			k:remove()
+			r[tag .. "_wall"], r[tag .. "_fire"], r[tag .. "_crater"] = broken, fire, count("air", GROUND1, GROUND2) - ground
 			L(("%s: smash=%s fire=%s blasts=%s -> wall_broken=%d fire=%d beams_fired=%s crater=%d"):format(tag,
 				core.settings:get("kaiju_smash_blocks"), core.settings:get("kaiju_gojira_fire"),
 				core.settings:get("kaiju_ghidorah_beam_blasts"), broken, fire, tostring(beamed),
@@ -67,7 +71,12 @@ core.register_on_joinplayer(function(player)
 		core.after(2, function()
 			phase("off", player, function()
 				for _, s in ipairs(SETTINGS) do core.settings:set_bool(s, true) end
-				phase("on", player, function() core.request_shutdown("done") end)
+				phase("on", player, function()
+					kaiju_test.result(r, {"off_wall", "off_fire", "off_crater", "on_wall", "on_fire", "on_crater"},
+						{{"off_wall", 0}, {"off_fire", 0}, {"off_crater", 0},
+						{"on_wall", {1, 1000}}, {"on_fire", {1, 1000}}, {"on_crater", {1, 1000}}})
+					core.request_shutdown("done")
+				end)
 			end)
 		end)
 	end)

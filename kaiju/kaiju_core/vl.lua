@@ -3,8 +3,8 @@
 -- part of Mineclonia's mob API the kaiju are written against: a mob class whose on_step
 -- runs the hooks in Mineclonia's order (check_standin, navigation, motion_step, ai_step,
 -- targeting rules, run_ai), melee, the target rule builders, damage and death. It is an
--- own, much smaller implementation (README.md §VoxeLibre): straight-line walking instead
--- of a pathfinder, no environment damage except burning, no fall damage.
+-- own, much smaller implementation (README.md §VoxeLibre): a pathfinder of its own
+-- (vl_path.lua), no environment damage except burning, no fall damage.
 
 local VL = mcl_mobs.mob_class
 local K = setmetatable({}, {__index = VL})
@@ -13,7 +13,31 @@ kaiju_core.mcl_mobs = api
 
 -- mobs_griefing is a plain setting on VoxeLibre (Mineclonia: a gamerule per mob)
 function kaiju_core.mob_griefing() return core.settings:get_bool("mobs_griefing", true) end
-function kaiju_core.tile_drops() return core.settings:get_bool("mcl_doTileDrops", true) end
+-- (read once at load, as VoxeLibre's own digs do: mcl_item_entity)
+local TILE_DROPS = core.settings:get_bool("mcl_doTileDrops", true)
+function kaiju_core.tile_drops() return TILE_DROPS end
+
+-- VoxeLibre's natural stone has no terrain group (Mineclonia: overworld_carvable), so a
+-- kaiju would cut the foot-level steps it climbs on and tunnel instead. The same nodes by
+-- name (not VoxeLibre's `stone` group: that includes stone bricks).
+core.register_on_mods_loaded(function()
+	local carvable = {}
+	for _, n in ipairs({"mcl_core:stone", "mcl_core:granite", "mcl_core:andesite", "mcl_core:diorite",
+			"mcl_deepslate:deepslate", "mcl_deepslate:tuff", "mcl_mud:mud", "mcl_mangrove:mangrove_mud_roots"}) do
+		carvable[n] = core.registered_nodes[n] ~= nil
+	end
+	local is_terrain = kaiju_core.is_terrain
+	function kaiju_core.is_terrain(name) return carvable[name] or is_terrain(name) end
+	-- The pathfinder needs each kaiju's swim depth, which the mods pass only here.
+	-- (not math.huge: VoxeLibre serialises the entity's fields)
+	local check_standin = kaiju_core.check_standin
+	function kaiju_core.check_standin(self, dtime, attach_pos, swim_depth)
+		self._swim_depth = swim_depth < math.huge and swim_depth or nil
+		return check_standin(self, dtime, attach_pos, swim_depth)
+	end
+end)
+
+dofile(core.get_modpath("kaiju_core") .. "/vl_path.lua")
 
 local SPEED = 0.8          -- nodes/s per movement_speed unit (Gojira 7.5: ~6 n/s, as on Mineclonia)
 local SWIM_SPEED = 5 / 3   -- nodes/s per water_velocity unit (Gojira 3.0: ~5 n/s)
@@ -25,7 +49,8 @@ local SEEK_INTERVAL = 0.5  -- nearest-target rules look for a new target this of
 local SIGHT_PERSISTENCE = 3
 local RETALIATION_PERSISTENCE = 15
 local PUSH = 3             -- nodes/s away from a mob it overlaps
-local PACE_TIMEOUT = 15    -- a straight-line pace towards a spot it can't reach ends after this
+local PACE_TIMEOUT = 15    -- a pace towards a spot it can't reach ends after this
+local ARRIVE = 0.6         -- nodes from a waypoint at which the next one is taken
 
 -- Defaults of Mineclonia's mob class that the kaiju rely on (their definitions override them).
 K.gwp_penalties = {}
@@ -55,6 +80,7 @@ function K:post_load_staticdata()
 	-- activities and targets are not carried over a reload
 	self._active_activity, self._active_activity_function, self._can_interrupt_activity = nil, nil, nil
 	self.pacing, self.attacking, self.attack = nil, nil, nil
+	self.waypoints, self._nav_partial, self._wp_from = nil, nil, nil
 	-- (the attack counter restarts at 0: an old id would match a new attack)
 	self._last_attack_id, self._last_recorded_attack_id = nil, nil
 end
@@ -145,7 +171,7 @@ function K:rotate_step(dtime)
 end
 
 ------------------------------------------------------------------------
--- Navigation (straight lines: VoxeLibre's pathfinder has another interface) and motion
+-- Navigation (paths from vl_path.lua, or a straight line) and motion
 ------------------------------------------------------------------------
 
 function K:go_to_stupidly(pos, factor)
@@ -153,20 +179,30 @@ function K:go_to_stupidly(pos, factor)
 	self.stupid_velocity = self.movement_speed * (factor or 1)
 end
 
+-- Plans a path towards target (as far as the search window reaches). false: there is none.
 function K:gopath(target, speed_bonus)
-	self:go_to_stupidly(target, speed_bonus)
+	local path, partial = kaiju_core.vl_find_path(self, target)
+	if not path then
+		self:cancel_navigation()
+		return false
+	end
+	self.waypoints, self._nav_partial, self._wp_from = path, partial, self.object:get_pos()
+	self.stupid_target = nil
+	self.gowp_velocity = self.movement_speed * (speed_bonus or 1)
 	return true
 end
 
 function K:cancel_navigation()
+	self.waypoints, self._nav_partial, self._wp_from = nil, nil, nil
 	self.stupid_target, self.movement_goal = nil, nil
 end
 
 function K:is_navigating()
-	return self.stupid_target
+	return self.waypoints or self.stupid_target
 end
 
 function K:navigation_finished()
+	if self.waypoints then return false end
 	local t = self.stupid_target
 	if not t then return true end
 	if kaiju_core.flat_dist(self.object:get_pos(), t) > 0.5 then return false end
@@ -180,8 +216,30 @@ function K:go_to_pos(pos, velocity, animation)
 	self:set_animation(animation or "walk")
 end
 
+-- Follows the path (waypoints, the next one last) before a straight-line goal, as on
+-- Mineclonia. A waypoint is done within ARRIVE of it, or once the mob is past it.
 function K:navigation_step()
-	if self.stupid_target then self:go_to_pos(self.stupid_target, self.stupid_velocity) end
+	local wps = self.waypoints
+	if not wps then
+		if self.stupid_target then self:go_to_pos(self.stupid_target, self.stupid_velocity) end
+		return
+	end
+	local pos, from = self.object:get_pos(), self._wp_from
+	local wp = wps[#wps]
+	while wp and (kaiju_core.flat_dist(pos, wp) <= ARRIVE
+			or (wp.x - pos.x) * (wp.x - from.x) + (wp.z - pos.z) * (wp.z - from.z) <= 0) do
+		from, wps[#wps] = wp, nil
+		wp = wps[#wps]
+	end
+	self._wp_from = from
+	if wp then
+		self:go_to_pos(wp, self.gowp_velocity)
+	else
+		-- The end of a partial path is not the target: melee plans the next stretch at once.
+		if self._nav_partial then self._target_pos = nil end
+		self:cancel_navigation()
+		self:halt_in_tracks()
+	end
 end
 
 function K:halt_in_tracks(immediate, keep_animation)
@@ -197,7 +255,12 @@ function K:check_standin(dtime, pos)
 	local cb = self.collisionbox
 	local feet = pos.y + cb[2]
 	local p = vector.new(math.floor(pos.x + 0.5), math.floor(feet + 0.5), math.floor(pos.z + 0.5))
-	if not kaiju_core.is_water(p) then return 0, nil end
+	if not kaiju_core.is_water(p) then
+		-- (kaiju_core.check_standin sets floats only in water: it must not stay 1 on land,
+		-- where smash would keep cutting the foot layer)
+		self.floats = 0
+		return 0, nil
+	end
 	local top = feet + cb[5] - cb[2] + 2
 	repeat p.y = p.y + 1 until p.y > top or not kaiju_core.is_water(p)
 	return p.y - 0.5 - feet, "water"
@@ -500,8 +563,8 @@ function K:custom_attack()
 	self.attack:punch(self.object, 1.0, {full_punch_interval = 1.0, damage_groups = {fleshy = self.damage}}, nil)
 end
 
--- Walk at the target (a new straight line when it has moved a node) and bite every
--- melee_interval while it is in reach and in sight.
+-- Walk at the target (a new path when it has moved a node, and now and then anyway, as
+-- Mineclonia's melee) and bite every melee_interval while it is in reach and in sight.
 function K:attack_melee(attach_pos, self_pos, dtime, target_pos, line_of_sight)
 	local first = not self.attacking
 	if first then
@@ -518,9 +581,12 @@ function K:attack_melee(attach_pos, self_pos, dtime, target_pos, line_of_sight)
 	end
 	local delay = math.max(self._gopath_delay - dtime, 0)
 	if (self._melee_esp or line_of_sight or first) and delay == 0
-			and (not self._target_pos or vector.distance(target_pos, self._target_pos) >= 1) then
+			and (not self._target_pos or vector.distance(target_pos, self._target_pos) >= 1
+				or math.random(100) <= 5) then
 		self._target_pos = target_pos
 		delay = 0.2 + math.random() * 0.35
+		local distance = vector.distance(self_pos, target_pos)
+		if distance > 32 then delay = delay + 0.5 elseif distance > 16 then delay = delay + 0.25 end
 		if not self:gopath(target_pos, self.pursuit_bonus) then delay = delay + 0.75 end
 	end
 	self._gopath_delay = delay

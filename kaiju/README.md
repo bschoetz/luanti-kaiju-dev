@@ -111,9 +111,14 @@ Mineclonia's (`tests/README.md` has the numbers).
 
 Limitations on VoxeLibre:
 
-- **No pathfinder.** VoxeLibre's has another interface; the kaiju walk straight at their
-  target or goal. They smash through what is in the way, as on Mineclonia; with
-  `kaiju_smash_blocks` off they get stuck sooner. They jump against a 2-node wall.
+- **A simpler pathfinder.** VoxeLibre's own has another interface and plans for mobs one
+  node wide, so `kaiju_core` brings one for the kaiju (`vl_path.lua`). It follows the rules
+  of Mineclonia's (the whole body must fit, steps of one node, a full path or else a
+  partial one, and the bulldozer when there is none), but looks only 24 nodes around the
+  kaiju at a time and spends at most 4 ms per search. A target further away is reached in
+  stretches; a wall longer than about 40 nodes can't be walked around and is bulldozed
+  (with `kaiju_smash_blocks` off: pushed against). Caves and overhangs lower than the
+  body count as walls.
 - **Simpler walking physics** (gravity, a fixed walking speed, braking in water, pushing
   out of other mobs), tuned so that Gojira's speeds match Mineclonia's (about 6 nodes/s on
   land, 5 swimming). Punches cause no knockback.
@@ -139,7 +144,7 @@ Every external API the kaiju use, Mineclonia (vendor checkout) against VoxeLibre
 | `attack_null`, `attack_melee`, `pre_melee_attack`, `custom_attack`, `melee_interval`, `_melee_esp` | yes | `attack_type` dogfight/shoot/explode | layer: Mineclonia's melee (walk at the target, bite in reach and in sight) |
 | `check_standin`, `_immersion_depth`, `_liquidtype` | yes | no (`standing_in`) | layer: water depth above the feet |
 | `motion_step`, `_moveresult` | yes | no (physics in `on_step`, `self.acc`, `falling`) | layer: walking physics; the kaiju's own flight and sea motion run unchanged |
-| `waypoints`, `pathfinding_context`, `cancel_navigation`, `go_to_stupidly`, `is_navigating`, `navigation_finished`, `gopath(target, bonus)`, `gwp_penalties` | yes (pathfinder) | `gopath(target, callback, prioritised)` with its own state | layer: straight lines; `waypoints` and `pathfinding_context` stay `nil` |
+| `waypoints`, `pathfinding_context`, `cancel_navigation`, `go_to_stupidly`, `is_navigating`, `navigation_finished`, `gopath(target, bonus)`, `gwp_penalties` | yes (pathfinder) | `gopath(target, callback, prioritised)` with its own state | layer: its own pathfinder (`vl_path.lua`) sets `waypoints` (the next one last, as on Mineclonia); `pathfinding_context` stays `nil` (a search finishes within the call) |
 | Mobs pushing each other apart (`pushable`) | yes, in its physics | in its `on_step` (`collision`, not run here); `pushable` always true | layer: overlapping kaiju push each other apart at 3 nodes/s (Mothra not: `pushable = false`); small mobs don't push them |
 | `halt_in_tracks`, `look_at`, `set_yaw` | yes | `set_yaw(yaw, delay)` only | layer (turns at 5 rad/s) |
 | `receive_damage`, `mcl_util.deal_damage` on a mob | `deal_damage` → `receive_damage` | `deal_damage` → the entity's `deal_damage` or `damage_mob` | layer: `on_punch`, `deal_damage` and `damage_mob` all end in `receive_damage` (attacker, retaliation) |

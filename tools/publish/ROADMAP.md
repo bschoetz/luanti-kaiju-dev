@@ -13,8 +13,13 @@ scheduled; contributions are welcome there.
 The kaiju run on VoxeLibre through a compatibility layer, with these degradations
 compared with Mineclonia:
 
-- **No pathfinder.** The kaiju walk in straight lines at their target or goal. With
-  `kaiju_smash_blocks` off they get stuck sooner; they jump against a 2-node wall.
+- **A simpler pathfinder** (`kaiju_core/vl_path.lua`, same rules as Mineclonia's for a
+  wide body). Remaining limits: it sees 24 nodes around the kaiju and gets 4 ms per search
+  (about 100-150 cells), so far targets are reached in stretches, a wall longer than about
+  40 nodes is bulldozed instead of walked around, and a way out of a large enclosed area
+  can be missed. Caves and overhangs lower than the body count as walls. As on Mineclonia,
+  the stuck detection fires during a detour of more than 3 s that does not bring the kaiju
+  closer to its target, and he then bulldozes straight at it for 6 s.
 - **Simpler walking physics** (gravity, fixed walking speed, braking in water, pushing out
   of other mobs). Punches cause no knockback.
 - **No environmental damage except burning:** lava, fire nodes, suffocation, drowning and
@@ -23,7 +28,6 @@ compared with Mineclonia:
 - **Griefing** follows VoxeLibre's `mobs_griefing` setting for all kaiju (Mineclonia: a
   gamerule per mob); the random block drops follow `mcl_doTileDrops`.
 - **Sounds:** no ghast hurt sound, Ghidorah uses the enderman's.
-- Gojira out of deep water stays in the tunnel he dug instead of climbing out.
 - Ghidorah's side heads beam on their own less often.
 
 ## Gojira

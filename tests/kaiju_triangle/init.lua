@@ -44,6 +44,11 @@ core.register_on_joinplayer(function(player)
 						L(("END winner=%s t=%d gojira=%d mothra=%d ghidorah=%d"):format(
 							kd and (gd and "draw" or "allies") or gd and "ghidorah" or "none", t,
 							math.max(hp(ge), 0), math.max(hp(me), 0), math.max(hp(ke), 0)))
+						local nav = kaiju_core._vl_nav_stats -- (VoxeLibre: the path searches, for information)
+						if nav then
+							L(("NAV plans=%d partial=%d failed=%d avg_us=%d max_us=%d"):format(nav.plans, nav.partial, nav.failed,
+								nav.total_us / math.max(nav.plans, 1), nav.max_us))
+						end
 					end
 					if ended and t >= ended + 8 then
 						done = true

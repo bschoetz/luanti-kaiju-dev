@@ -124,3 +124,102 @@ function T.ocean(done)
 		if left == 0 then done() end
 	end)
 end
+
+-- Fills p1..p2 with `name` (VoxelManip: no callbacks, no limit on the count).
+function T.fill(p1, p2, name)
+	local vm = VoxelManip()
+	local area = VoxelArea(vm:read_from_map(p1, p2))
+	local data, id = vm:get_data(), core.get_content_id(name)
+	for z = p1.z, p2.z do for y = p1.y, p2.y do for x = p1.x, p2.x do data[area:index(x, y, z)] = id end end end
+	vm:set_data(data)
+	vm:write_to_map(true)
+end
+
+function T.count(name, p1, p2)
+	local _, c = core.find_nodes_in_area(p1, p2, name)
+	return c[name] or 0
+end
+
+-- A navigation course (the nav_* scenarios): a kaiju must walk to the player around what
+-- `build` put in its way. o = {
+--   area = {p1, p2}: x/z extent made flat first (dirt up to y = 8, air above),
+--   build = function(player): before the kaiju is spawned, or with late_build = true once
+--     it has its target (for courses that hide the player from it),
+--   mob = entity name, spawn = pos, player = pos,
+--   time = seconds after the kaiju has its target (the course ends when it reaches the player),
+--   setup = function(ent) (optional), no_target = true: the kaiju only paces,
+--   blocks = {{name, p1, p2}, ...}: the course's nodes; r.removed is how many are gone,
+--   sample = function(r, ent, pos, t) every 0.25 s (optional),
+--   keys, expect: for T.result }
+-- Values for all courses: reached (seconds until it is within reach + 1 of the player,
+-- horizontally), speed (nodes/s up to then), removed, moved (path length), max_y, and
+-- nav_max_us (VoxeLibre: the slowest path search in microseconds; Mineclonia: 0).
+function T.nav_course(o)
+	T.keep_players_alive()
+	local function course_blocks()
+		local n = 0
+		for _, b in ipairs(o.blocks or {}) do n = n + T.count(b[1], b[2], b[3]) end
+		return n
+	end
+	core.register_on_joinplayer(function(player)
+		core.set_timeofday(0.5)
+		local p1, p2 = o.area[1], o.area[2]
+		core.emerge_area(vector.new(p1.x - 16, -32, p1.z - 16), vector.new(p2.x + 16, 48, p2.z + 16), function(_, _, left)
+			if left > 0 then return end
+			T.fill(vector.new(p1.x, 6, p1.z), vector.new(p2.x, 8, p2.z), "mcl_core:dirt")
+			T.fill(vector.new(p1.x, 9, p1.z), vector.new(p2.x, 48, p2.z), "air")
+			player:set_pos(o.player)
+			if not o.late_build then o.build(player) end
+			core.after(3, function()
+				local obj = core.add_entity(o.spawn, o.mob)
+				local ent = obj:get_luaentity()
+				ent.view_range = o.no_target and 0 or 80
+				if o.setup then o.setup(ent) end
+				local r = {moved = 0, max_y = -100}
+				local function run()
+					if o.late_build then o.build(player) end
+					local before = course_blocks()
+					local last, d0 = obj:get_pos(), T.flat(obj:get_pos(), player:get_pos())
+					T.log(("start: %s at %s, player %.0f nodes away"):format(o.mob, core.pos_to_string(vector.round(last)), d0))
+					local finished
+					local function finish()
+						if finished then return end
+						finished = true
+						r.removed = before - course_blocks()
+						local s = kaiju_core._vl_nav_stats
+						r.nav_max_us = s and s.max_us or 0
+						if s then
+							T.log(("NAV plans=%d partial=%d failed=%d avg_us=%d max_us=%d"):format(s.plans, s.partial, s.failed,
+								s.total_us / math.max(s.plans, 1), s.max_us))
+						end
+						T.result(r, o.keys, o.expect)
+						core.request_shutdown("done")
+					end
+					for i = 1, o.time * 4 do
+						core.after(i * 0.25, function()
+							local p, e = obj:get_pos(), obj:get_luaentity()
+							if finished or not p or not e then return end
+							local t, d = i * 0.25, T.flat(p, player:get_pos())
+							r.moved, r.max_y, last = r.moved + T.flat(p, last), math.max(r.max_y, p.y), p
+							if not r.reached and not o.no_target and d <= e.reach + 1 then
+								r.reached, r.speed = t, (d0 - d) / t
+								core.after(0.3, finish) -- (his bites knock the player away)
+							end
+							if o.sample then o.sample(r, e, p, t) end
+							if i % 8 == 0 then
+								T.log(("t=%d pos=%s y=%.1f dist=%.0f waypoints=%s bulldoze=%s"):format(t, core.pos_to_string(vector.round(p)),
+									p.y, d, tostring(e.waypoints and #e.waypoints), tostring(e._bulldoze_time ~= nil)))
+							end
+						end)
+					end
+					core.after(o.time + 0.5, finish)
+				end
+				local function wait()
+					local e = obj:get_luaentity()
+					if o.no_target or (e and e.attack) then run() else core.after(0.25, wait) end
+				end
+				wait()
+			end)
+		end)
+	end)
+end

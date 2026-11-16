@@ -125,18 +125,28 @@ What is game-aware (by feature, not by game id):
   `mcl_core:tree` / `mcl_core:leaves` on VoxeLibre.
 - `gojira_smash`, `kaiju_settings`: griefing is read through `kaiju_core.mob_griefing`.
 - `gojira_tail`: the stock `ai_step` is `kaiju_core.mcl_mobs.mob_class.ai_step`.
-- `kaiju_truce`: "on a path" means a pathfinder path on Mineclonia and a straight-line
-  goal (`stupid_target`) on VoxeLibre, which has no pathfinder for the kaiju.
+- `kaiju_truce`: "on a path" means `waypoints` (both games; on VoxeLibre from the layer's
+  own pathfinder) or, on VoxeLibre, a straight-line goal (`stupid_target`).
+- The nav_* courses, `gojira_smash` and `kaiju_triangle` log a `NAV` line on VoxeLibre
+  (`kaiju_core._vl_nav_stats`: the layer's path searches and their time). On Mineclonia
+  there is no such line and `nav_max_us` is 0.
 
 What differs on VoxeLibre (expected, see `kaiju/README.md` §VoxeLibre):
 
 - `gojira_arrows`: VoxeLibre's arrows raycast along their path and also hit his body, so
   `control` takes damage too. An arrow does 10 × 40 % = 4 (Mineclonia's scale with speed).
 - `gojira_water`: he floats at about `immersion` 10.5 in the deep pool, tunnels out at swim
-  depth (as on Mineclonia), but without a pathfinder he stays in his tunnel under the
-  player's pillar instead of climbing out.
-- `gojira_smash`: he walks a straight line, so less of the ring falls (`wall_stone` 1440 →
-  about 1280, `trunks` 168 → about 144). The chest is dug and drops its contents.
+  depth and climbs up to the player's pillar, as on Mineclonia. (Until 16 Nov 2026 he stayed
+  in a tunnel under the pillar. That was a terrain problem, not the missing pathfinder:
+  VoxeLibre's stone has no terrain group, so smashing cut the steps he climbs on. `vl.lua`
+  now names the stone nodes as terrain.)
+- `gojira_smash`: the forest is in his way, so the pathfinder gives him a short path and
+  then none: he stands in front of it for 3 s, then bulldozes one straight line through
+  forest, ring and house to the player (there at about 13 s). He never turns, so less of
+  the ring falls than on Mineclonia, where he swerves and his tail sweeps (`wall_stone`
+  1440 → about 1285, `trunks` 168 → about 144; Mineclonia about 600-760 and 15-90). The
+  chest is dug and drops its contents. How much falls depends on the route on both games
+  and is not a target; the RESULT checks lower bounds only.
 - `cthulhu_ocean`: `idle_removed` counts VoxeLibre's own removals (mcl_core's attached-node
   check drops mushrooms in caves under the beach, within 12 nodes of his home), so it can
   fail with nothing of his doing. `ashore` can exceed 60: he grabs the player from the
@@ -152,7 +162,7 @@ balance scenarios were run 3-4 times each, five in parallel, `ghidorah_heads` al
 |---|---|---|---|
 | `gojira_anim` | ok: 6.15 n/s, breath | ok | ok: 6.0 n/s, walk 30.9 fps, breath |
 | `gojira_smash` | ok: chest dug, wall 1440 → 793, trunks 168 → 29 | ok: → 745, → 20 | ok: chest dug, contents drop; wall → 1280, trunks → 144 |
-| `gojira_water` | ok: swims (immersion 10), tunnels out, climbs ashore | ok | ok: swims (immersion ~10), tunnels out; ends in his tunnel under the pillar |
+| `gojira_water` | ok: swims (immersion 10), tunnels out, climbs ashore | ok | ok: swims (immersion ~10), tunnels out, climbs to the pillar (RESULT ok, y 7.5) |
 | `mothra_show`, `ghidorah_show`, `cthulhu_show` | ok (screens not inspected) | ok | ok (screens not inspected) |
 | `kaiju_fight` | Gojira 500 → 167; Mothras 350 / 172 | → 141; 350 / 157 | → 125; 148 / 350 |
 | `kaiju_duel` | Gojira wins with 104, 95, 95 HP | 95, 90, 95 | 95, 95, 95, 95 |
@@ -181,6 +191,39 @@ above it; B: the husk was down to 4 HP, not dead; C: lands before removal),
 6.00 instead of 0.00, as the layer has no knockback), `gojira_overhead` and
 `kaiju_truce_end` (RESULT ok), `kaiju_clinch` (RESULT ok), `ghidorah_fight`,
 `kaiju_dig_callbacks`, `kaiju_settings` (off: nothing broken; on: wall, fire, crater).
+
+### Results after the VoxeLibre pathfinder (16 Nov 2026)
+
+`vl.lua` got terrain names for stone, and then a pathfinder (`kaiju_core/vl_path.lua`).
+Mineclonia's code paths did not change. Luanti 5.17, `vendor/mineclonia` and VoxeLibre
+0.92.4, four scenarios in parallel, `ghidorah_heads` alone; the nav_* courses also on the
+installed Mineclonia release.
+
+| Scenario | Mineclonia (vendor) | VoxeLibre 0.92.4 |
+|---|---|---|
+| `nav_wall` | RESULT ok: reached 5.5 s (6.0 and 15.0 under load; installed 6.2) | RESULT ok: 4.0-5.5 s |
+| `nav_wall_wide` | RESULT ok: 8.2 s (22.5 and 38.5 under load, after bulldozes; installed 10.8) | RESULT ok: 6.5-7.5 s |
+| `nav_cliff` | RESULT ok: top 3.0-4.0, reached 4.5-5.0 (installed 3.0, 4.0) | RESULT ok: top 2.8-3.0, reached 3.8-4.0 |
+| `nav_forest` | RESULT ok: 7.8, 9.2 s (installed 10.2) | RESULT ok: 8.0-8.2 s |
+| `nav_water` | RESULT ok: ashore 8.0-8.5, reached 10.2-10.8 (installed 7.2, 8.8) | RESULT ok: ashore 3.5-3.8, reached 5.5 |
+| `nav_protected` | RESULT ok: 5.2, 7.2, 16.2 s (installed 5.2) | RESULT ok: 4.0-4.2 s |
+| `nav_far` | RESULT ok: 5.4-6.0 n/s in 6 runs (installed: 3 ok; one 4.3 n/s, the player had been moved 14 nodes during the run) | RESULT ok: 5.9-6.0 n/s |
+| `nav_pace` | RESULT ok: moved 58-59, max_y 8.5 (installed 60) | RESULT ok: moved 111-113, max_y 8.5 |
+| `gojira_water` | 3 of 6 ok (see the scenario) | RESULT ok, 4 of 4 |
+| `gojira_smash` | RESULT ok: wall −681 and −732, trunks −79 and −134 | RESULT ok: wall −155, trunks −24 |
+| `kaiju_settings` | RESULT ok (on: wall 129, fire 1, crater 4); one run `on_crater=0` | RESULT ok (on: wall 91, fire 1, crater 5) |
+| `kaiju_truce`, `kaiju_clinch` | RESULT ok | RESULT ok |
+| `kaiju_duel` | Gojira wins with 95 HP (19 %), twice | Gojira wins with 95, 100 |
+| `kaiju_triangle` | allies win, Ghidorah dead at 59 and 63 s; Gojira 287, 227 | allies at 59 and 61 s; Gojira 170, 90 |
+| `ghidorah_heads`, `ghidorah_fight`, `cthulhu_show` | exit 0, logs complete | exit 0, logs complete |
+| `cthulhu_grab`, `cthulhu_intruder`, `cthulhu_kaiju`, `cthulhu_sea`, `cthulhu_spawns`, `cthulhu_swim`, `cthulhu_territory` | RESULT ok | RESULT ok |
+| `cthulhu_ocean` | RESULT ok | RESULT FAIL: `idle_removed=5` (VoxeLibre's own removals, as before), once also `ashore=60.5` |
+| `compat.sh` | step 2: three kaiju, three eggs | step 2: three kaiju, three eggs |
+
+Path searches on VoxeLibre (`NAV` lines, 23 course runs): 0.9-2.0 ms on average per search, the
+slowest search of a run 1.8-4.2 ms (7.3 ms once, with other scenarios running in parallel);
+4-30 searches per course. `kaiju_triangle`: 39 searches, 0.9 ms on average, 2.6 ms at most.
+`gojira_smash`: 3 searches (1 partial, 2 without a path), 2.2 ms on average, 4.2 ms at most.
 
 ## Scenarios
 
@@ -300,7 +343,7 @@ Times are seconds after the player joins. Every scenario sets noon (`set_timeofd
 ### `gojira_smash`: smashing, container safety, bulldozing
 
 - **Settings:** survival, `viewing_range = 140`, `fov = 90`. Depends on
-  `gojira, mcl_chests, mcl_beehives`.
+  `gojira, mcl_chests, mcl_beehives, kaiju_test`.
 - **Scene:** the player stands at (0, 9, −6) looking north. At 1 s Gojira spawns at (0, 8.6, 36).
   Only once he has locked on (`e.attack` is set) is the world built around the player:
   - a 19×19 stone ring, y 9-28 (20 high)
@@ -324,7 +367,10 @@ Times are seconds after the player joins. Every scenario sets noon (`set_timeofd
   `trunks` go down as he breaks through (1440 → about 600, 168 → about 15-40).
   `floating_sand=0` (sand falls). `under=` is never air: he never digs the layer he stands on, so
   he does not sink. `BULLDOZE start` appears after he has been stuck for 3 s, and `end` follows
-  6 s later.
+  6 s later. The report at 60 s ends with `VALUES gold=… emerald=… floating_sand=…
+  wall_removed=… trunks_removed=… nav_max_us=…` and `RESULT ok`: 17 gold ingots and 5 emeralds
+  on the ground, no floating sand, at least 80 stone nodes of the ring and 12 trunks gone
+  (lower bounds: the counts depend on his route), and on VoxeLibre no path search over 20 ms.
 
 ### `gojira_tail`: tail sweep and smash cost
 
@@ -345,7 +391,7 @@ Times are seconds after the player joins. Every scenario sets noon (`set_timeofd
 
 ### `gojira_water`: wading and swimming
 
-- **Settings:** survival, `viewing_range = 140`, `fov = 80`. Depends on `gojira`.
+- **Settings:** survival, `viewing_range = 140`, `fov = 80`. Depends on `gojira`, `kaiju_test`.
 - **Scene:** at 2 s a cobble pillar is built, and the player is placed on it at (0, 20, −10) looking
   north and down. 2 s later Gojira spawns at (0, 8.6, 35) with `view_range` raised to 80. Once he has
   locked on, two pools are dug across his path (x −20..20):
@@ -361,6 +407,12 @@ Times are seconds after the player joins. Every scenario sets noon (`set_timeofd
   deep pool he swims, because more than 10 nodes of water above his feet (`SWIM_DEPTH`) switches him
   to floating. He keeps his head above the water and moves at about 5 n/s (`water_velocity` 3.0).
   He crosses straight through instead of detouring, because `gwp_penalties.WATER = 0`.
+  The last lines are `VALUES y=… pillar=…` and `RESULT ok`: at t=30 he is out of the water
+  (`y` ≥ 4.4) and within 10 nodes of the pillar (`pillar`, horizontally), not in a tunnel
+  below the pools. VoxeLibre passed 4 of 4 runs (y 7.5-8.5, 0.2-4.5 nodes from the pillar).
+  On Mineclonia the moment is too early or too late in half the runs (3 of 6 ok): at t=30
+  he is sometimes still climbing out (y 2.5, 3 nodes from the pillar) and sometimes already
+  past it (13 and 22 nodes, on the ground). Read the `t=` lines before calling that a failure.
 
 ### `gojira_punch`: punches don't stop him; target loss ends a bulldoze
 
@@ -648,7 +700,7 @@ Times are seconds after the player joins. Every scenario sets noon (`set_timeofd
 
 - **Settings:** survival, `viewing_range = 140`, `fov = 90`, and `kaiju_smash_blocks`,
   `kaiju_gojira_fire`, `kaiju_ghidorah_beam_blasts` all `false`. Depends on
-  `gojira, ghidorah, mcl_fire`.
+  `gojira, ghidorah, mcl_fire, kaiju_test`.
 - **Scene:** the player stands at (0, 9, −12) with `pointable = false`, so that beams aimed at him
   pass through and hit the ground behind him. Two phases of 10 s, `off` with the settings from
   `test.conf` and `on` after `core.settings:set_bool(…, true)` at runtime, which is the default.
@@ -668,7 +720,58 @@ Times are seconds after the player joins. Every scenario sets noon (`set_timeofd
   on: smash=true fire=true blasts=true -> wall_broken=124 fire=1 beams_fired=true crater=4
   ```
   `off` must be all zeros with `beams_fired=true` (the beams did fire, they just broke nothing).
-  `on` must be above zero in all three; the exact numbers vary.
+  `on` must be above zero in all three; the exact numbers vary. The last lines are
+  `VALUES off_wall=… off_fire=… off_crater=… on_wall=… on_fire=… on_crater=…` and `RESULT ok`
+  for exactly that. `on_crater` was 0 in one Mineclonia run of four (the volley missed the
+  counted ground while four scenarios ran in parallel): rerun it alone.
+
+### Navigation courses: `nav_wall`, `nav_wall_wide`, `nav_cliff`, `nav_forest`, `nav_water`, `nav_protected`, `nav_far`, `nav_pace`
+
+Eight short courses for the walking kaiju's pathfinding: something stands between the kaiju
+and the player that he may not break, and there is a way around it. They define what
+"the same navigation on both games" means: every course must end with `RESULT ok` on
+Mineclonia (its own pathfinder) and on VoxeLibre (`kaiju_core/vl_path.lua`). Times and
+routes differ and are not compared.
+
+All use `kaiju_test.nav_course` (`tests/lib/init.lua`): the area is made flat (dirt up to
+y = 8, air above), the course is built, the kaiju is spawned with `view_range` 80, and from
+the moment he has his target his position is sampled every 0.25 s. The course ends 0.3 s
+after he is within `reach + 1` of the player (his bites knock the player away), or after
+its time limit.
+
+- **Settings:** survival, `mobs_spawn = false`, `kaiju_gojira_fire = false`, and
+  `kaiju_smash_blocks = false` except in `nav_protected`. Gojira's breath is disabled
+  (`_breath_cooldown = 1e9`). Depend on `gojira` (`nav_wall_wide`: `ghidorah`) and
+  `kaiju_test`.
+- **Logs:** `start: <mob> at <pos>, player <n> nodes away`, every 2 s
+  `t=… pos=… y=… dist=… waypoints=<n|nil> bulldoze=<bool>`, on VoxeLibre
+  `NAV plans=… partial=… failed=… avg_us=… max_us=…`, then `VALUES …` and `RESULT …`.
+- **Values:** `reached` (seconds until he is in reach), `speed` (nodes/s up to then),
+  `removed` (course nodes gone), `moved` (path length), `max_y`, `nav_max_us` (VoxeLibre:
+  the slowest path search, µs; Mineclonia: 0), and per course `top` or `ashore`.
+- **Runtime:** 15-70 s.
+
+| Course | Scene | Good (`RESULT ok`) |
+|---|---|---|
+| `nav_wall` | Cobble wall, 3 high, x −20..20 at z = 0, with a 7-wide gap at x 4..10. Gojira at (0, 14), player at (0, −12). | `reached` within 60 s, `removed` = 0 |
+| `nav_wall_wide` | The same wall with a 9-wide gap at x 4..12, for King Ghidorah (7 × 7 nodes), kept on the ground and without beams (`_mode_timer`, `_beam_cooldown` = 1e9; `kaiju_ghidorah_beam_blasts = false`). | `reached` within 60 s, `removed` = 0 |
+| `nav_cliff` | Stone plateau, 6 high, z ≤ −6, the player on top at (0, −16); a 7-wide stair of 1-node steps at x 4..10. | `top` (on the plateau, y ≥ 14.4) and `reached` within 50 s, `removed` = 0 |
+| `nav_forest` | Trunks every 3 nodes under a closed canopy, x −16..16, z −9..13, with a clear 7-wide lane at x 6..12. Built once he has his target (the canopy hides the player). Gojira at (0, 24), player at (0, −18). | `reached` within 45 s, `removed` = 0 (trunks and leaves) |
+| `nav_water` | Pool 31 × 31, 22 deep, vertical stone walls, one 7-wide ramp of 1-node steps at x 4..10. Gojira swims at (0, 30), player on land at (0, −6). | `ashore` (immersion 0, y ≥ 8.4) and `reached` within 60 s, `removed` = 0 |
+| `nav_protected` | As `nav_wall`, but block smashing is on and the wall is protected (`core.is_protected` overridden for its box). | `reached` within 60 s, `removed` = 0 |
+| `nav_far` | Open ground, the player 60 nodes away (VoxeLibre's search sees 24: he gets there on chained partial paths). | `reached` within 20 s, `speed` ≥ 5 (of his 6) |
+| `nav_pace` | No target (`view_range` 0). Gojira paces all the time (`pace_chance` 1, `pace_width` 14) in a pen of cobble walls, 21 × 21 inside. | `moved` ≥ 10, `max_y` ≤ 8.9 (on VoxeLibre a kaiju that runs into a wall hops), `removed` = 0 |
+
+How the courses got their shape (16 Nov 2026): they were written first and run on Mineclonia.
+The first versions had the gap, the stair and the ramp 11 to 19 nodes off the direct line;
+Mineclonia failed `nav_wall`, `nav_wall_wide`, `nav_cliff` and `nav_water` there. Its
+pathfinder stops after 10 ms, which for a body 5 nodes wide is a small area, so it led
+Gojira straight to the wall, where he was stuck, bulldozed, and stood again. With a
+2-high wall it failed even with the gap at x 4..10 (passed only after a bulldoze had
+pushed him sideways). So the walls are 3 high and every opening is 7 nodes from the
+direct line; that Mineclonia passes, in 5-9 s when the machine is idle and up to 38 s
+(`nav_wall_wide`, after one or two bulldozes) with other scenarios running in parallel.
+Wider detours are beyond both games' kaiju and end in the bulldozer.
 
 ### `cthulhu_show`: Cthulhu's model and animations (visual)
 
@@ -950,8 +1053,9 @@ and a `=0` count with `steps` above 0 means a flyer has left the active area aga
      A scenario that calls `kaiju_core` directly should list it too. It is linked into every
      test world anyway. So is `kaiju_test` (`tests/lib/init.lua`); list it to use its helpers:
      `log`, `flat` (horizontal distance), `name_of`, `keep_players_alive`, `sea`, `ocean`,
-     `column`, `on_ground`, `count_removed` and `result` (the `VALUES` and `RESULT` lines from a
-     table of values and a list of expected ranges).
+     `column`, `on_ground`, `count_removed`, `fill` and `count` (nodes in a box), `nav_course`
+     (§Navigation courses) and `result` (the `VALUES` and `RESULT` lines from a table of
+     values and a list of expected ranges).
      The folder name and the mod `name` should match. `run.sh` links the folder into
      `worldmods/<name>`.
    - `test.conf`: the scenario's settings, appended after the common ones (`creative_mode`,

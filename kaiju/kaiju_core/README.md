@@ -785,11 +785,13 @@ Points to decide (what Ghidorah does is in his README):
    dig automatically.
 3. **doTileDrops** [code]. Both the 5 % random drops and the drops of real digs
    (`handle_node_drops`) check the doTileDrops gamerule (`kaiju_core.tile_drops()`:
-   `mcl_vars.do_tile_drops`; on VoxeLibre the `mcl_doTileDrops` setting). A chest's **contents** still drop
+   `mcl_vars.do_tile_drops`; on VoxeLibre the `mcl_doTileDrops` setting, read once at load
+   as VoxeLibre's own digs do). A chest's **contents** still drop
    with the gamerule off, only the chest item itself does not. No test covers the gamerule
    being off.
 4. **Terrain groups decide what "hill" means** [code]. Only nodes in `TERRAIN_GROUPS` are
-   kept at foot level. Natural stone is `overworld_carvable`; cobble, planks, bricks and
+   kept at foot level. Natural stone is `overworld_carvable` (VoxeLibre has no such group:
+   `vl.lua` wraps `is_terrain` to add the same eight nodes by name); cobble, planks, bricks and
    most man-made blocks are not, so a kaiju walks through a 2-high wall but climbs a
    2-high dirt step. While swimming (`floats == 1`) the foot layer is cut too: leaving
    deep water, Gojira tunnels through the shore at swim depth (`gojira_water`).
@@ -875,14 +877,79 @@ falls back to VoxeLibre's `mcl_mobs` and replaces:
 Constants in `vl.lua`: `SPEED` 0.8 nodes/s per `movement_speed` (Gojira's 7.5 gives the
 6 n/s measured on Mineclonia), `SWIM_SPEED` 5/3 per `water_velocity`, `GRAVITY` 14.7,
 `JUMP` 7 (against a wall), `RISE` 4 (vertical speed in water), `TURN_RATE` 5 rad/s,
-`PUSH` 3 n/s (out of an overlapping kaiju; other mobs don't push), `PACE_TIMEOUT` 15 s.
+`PUSH` 3 n/s (out of an overlapping kaiju; other mobs don't push), `PACE_TIMEOUT` 15 s,
+`ARRIVE` 0.6 nodes (a waypoint counts as reached).
+
+`vl.lua` also wraps three functions of `init.lua` once all mods are loaded (the kaiju call
+them through the `kaiju_core` table): `is_terrain` also accepts the eight nodes Mineclonia
+marks `overworld_carvable` (stone, granite, andesite, diorite, deepslate, tuff, mud, muddy
+mangrove roots), by name, because VoxeLibre has no such group (its `stone` group includes
+stone bricks, so it is not used); `check_standin` records the kaiju's swim depth in
+`self._swim_depth` for the pathfinder; and `tile_drops` returns the `mcl_doTileDrops`
+setting as read at load.
+
+### Pathfinding on VoxeLibre (`vl_path.lua`)
+
+Mineclonia's pathfinder is 3400 lines tied to its mob class, VoxeLibre's own plans for mobs
+one node wide, and the engine's `core.find_path` knows no body height or water. So the
+layer has a small pathfinder for the kaiju: `kaiju_core.vl_find_path(self, target)` returns
+a list of positions with the next one last (like Mineclonia's `waypoints`) and whether the
+path is partial, or `nil`. `gopath` stores it in `self.waypoints`; `navigation_step` walks
+it before any straight-line goal (`stupid_target`), as on Mineclonia.
+
+- **Grid.** One cell per node column, in a window of 24 cells around the kaiju (49 × 49).
+  A column's height is the top of its highest walkable node between
+  `round(feet + height + 1)` (up to where `smash` clears, so the roof of a tunnel he cut
+  himself is not ground) and 16 below the feet. Leaves, roofs and overhangs inside that
+  band are ground, i.e. walls. No ground in the band, or lava: impassable. Water deeper
+  than the swim depth: he swims there, feet `swim_depth` below the surface.
+- **Body.** A cell's height is the highest column under the body standing on the cell
+  centre (5 × 5 columns for Gojira, 7 × 7 for Ghidorah and Cthulhu, as in `smash`). The
+  cell is impassable if a column it can touch standing anywhere in the cell (7 × 7 for
+  all three) is more than a step higher: he walks up to half a node beside the line of
+  cell centres, and with the 5 × 5 box alone Gojira clipped wall ends and hopped. So every
+  kaiju needs a gap 7 nodes wide.
+- **Moves.** Eight neighbours; diagonally only if both cells beside the line can be entered
+  too. Up at most 1.125 (Mineclonia's jump height) or into a cell where he swims; down at
+  most 3 without a target (Mineclonia's safe fall distance), any drop while attacking.
+  Cost 1 or √2, plus `gwp_penalties.WATER` (default 8; the kaiju set 0) on wet cells; a
+  negative penalty makes them impassable. Heuristic: octile distance × 1.5, as Mineclonia.
+- **Result.** The path to the target's cell; if that is not reached, a partial path to
+  the cell nearest the target that was examined (for a target beyond the window: to where
+  the way leaves the window); if no cell is nearer than the start, `nil`, and `gopath`
+  returns false. Only cells where the direction changes are kept.
+- **Budget.** A search ends after 1200 cells or 4 ms. In practice the time is the limit:
+  reading the columns costs about 0.3 µs per node, 20-130 µs per cell, so a search covers
+  about 100-150 cells. Measured (`kaiju_core._vl_nav_stats`: `plans`, `partial`, `failed`,
+  `total_us`, `max_us`; the nav_* scenarios log it): 0.4-4 ms, typically 1-2 ms, per
+  search. There is no shared budget, no deferred search and no reuse of an older path: a
+  kaiju plans when melee asks (every 0.2-1.3 s while the target moves, and on 5 % of the
+  other steps, as on Mineclonia).
+- **Following.** A waypoint is done within `ARRIVE` of it or once he is past it. When a
+  partial path runs out, `_target_pos` is cleared, so melee plans the next stretch at
+  once: a far target is reached by chaining partial paths without stopping (`nav_far`).
+
+Limits, accepted: the window. A wall longer than about 40 nodes can't be walked around
+(no cell within 24 nodes is nearer the target: no path, stuck, bulldoze). Caves and
+overhangs lower than the body are walls; unloaded columns are solid. A search that runs
+out of time returns the best partial path so far, which can lead into a dead end.
+
+Behaviour that follows, the same on both games and left as it is: the stuck detection of
+§3.3 measures the distance to the target, so a detour that takes him no closer for 3 s
+starts a 6 s bulldoze straight at the target, also with `kaiju_smash_blocks` off, where it
+is a useless push against the wall. And where the old layer walked a straight line through
+a forest or a wall (and reached the player in `gojira_smash` after 12 s), he now first
+looks for a way, stands when there is none, and bulldozes after 3 s: he arrives later,
+swerves, and breaks other blocks. Ghidorah takes off more often in clutter (a bulldoze
+makes him fly).
 
 Gotchas on VoxeLibre:
 
-1. **Straight lines only**: `gopath` is `go_to_stupidly`. `waypoints` and
-   `pathfinding_context` are always `nil`; code that drops a pathfinder path before a
-   straight walk (`cancel_navigation` in gojira's retreat, cthulhu's `walk_home`) is
-   harmless there.
+1. **Paths are planned inside `gopath`**: it returns false when there is no path, and
+   `pathfinding_context` is always `nil`. `waypoints` is a plain list that VoxeLibre would
+   save with the entity; `post_load_staticdata` drops it. Code that drops a path before a
+   straight walk (`cancel_navigation` in gojira's retreat, cthulhu's `walk_home`) works as
+   on Mineclonia.
 2. **VoxeLibre's own mobs** have no `dead` field and no `collisionbox` field. The layer's
    target checks use `state == "die"` and `health`; anything that reads another mob's box
    needs `obj:get_properties().collisionbox` as a fallback (cthulhu's `can_grab` does).
