@@ -1,0 +1,12 @@
+# All three apply on top of Mineclonia's mobs_griefing gamerule: with that off, nothing
+# is destroyed whatever is set here.
+
+#    Walking kaiju (Gojira, King Ghidorah, Cthulhu) break the blocks in their way, sweep them
+#    away with their tails and flatten the spot they land on.
+kaiju_smash_blocks (Kaiju smash blocks) bool true
+
+#    Gojira's fire breath sets fire to the blocks it hits.
+kaiju_gojira_fire (Gojira's fire breath ignites blocks) bool true
+
+#    King Ghidorah's gravity beams blast small craters where they hit blocks.
+kaiju_ghidorah_beam_blasts (Ghidorah's beams blast blocks) bool true

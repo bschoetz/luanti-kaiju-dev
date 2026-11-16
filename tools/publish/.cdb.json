@@ -1,0 +1,12 @@
+{
+	"type": "MOD",
+	"title": "Kaiju",
+	"name": "kaiju",
+	"short_description": "Giant monsters for Mineclonia and VoxeLibre: Gojira, Mothra, King Ghidorah and Cthulhu.",
+	"long_description": "Four giant monsters with their own models, animations and fighting styles. Gojira breathes fire and smashes through forests and houses; Mothra guards the skies with wing gusts and poison powder; King Ghidorah walks and flies, fires gravity beams from three heads that grow back; Cthulhu sleeps on the sea floor and drags intruders under water. They fight each other too. Spawn eggs only, no natural spawning. Block destruction can be switched off.",
+	"tags": ["mobs", "adventure__rpg", "pve"],
+	"license": "MIT",
+	"media_license": "MIT",
+	"website": "https://github.com/bschoetz/luanti-kaiju",
+	"issue_tracker": "https://github.com/bschoetz/luanti-kaiju/issues"
+}
